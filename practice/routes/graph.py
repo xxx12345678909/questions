@@ -1,8 +1,11 @@
 """Knowledge graph routes — topology, dependencies, path planning, mastery heatmap."""
+import json
+
 from flask import Blueprint, request, jsonify
 
 from practice.db import get_db, update_node_mastery
 from practice.engine import recommend_learning_path
+from practice.repository.cache_proxy import cache_service
 
 graph_bp = Blueprint('graph_api', __name__)
 
@@ -374,18 +377,30 @@ def graph_edge_update():
 
 @graph_bp.route('/api/path/recommend', methods=['GET'])
 def path_recommend():
-    """获取专项通关最短学习路径。"""
+    """获取专项通关最短学习路径（cache-aside 缓冲）。"""
     db = get_db()
     target_node_id = request.args.get('target_node_id', type=int)
     if not target_node_id:
         return jsonify({'error': '请指定目标知识点 target_node_id'}), 400
 
     threshold = request.args.get('mastery_threshold', type=float, default=0.7)
+    cache_key = f"practice:graph:learning_path:{target_node_id}"
+
+    # 1. Cache hit — return in-memory snapshot
+    cached = cache_service.get(cache_key)
+    if cached:
+        result = json.loads(cached)
+        result['status'] = 'success'
+        result['cached'] = True
+        return jsonify(result)
+
+    # 2. Cache miss — compute, store, return
     result = recommend_learning_path(db, target_node_id, mastery_threshold=threshold)
 
     if 'error' in result:
         return jsonify(result), 404
 
+    cache_service.set(cache_key, json.dumps(result), ttl=600)
     result['status'] = 'success'
     return jsonify(result)
 

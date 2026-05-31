@@ -171,14 +171,25 @@ def submit_answer():
 
     db.commit()
 
-    # Update mastery for all associated knowledge nodes
+    # Update mastery for all associated knowledge nodes (async)
     try:
         node_rows = db.execute(
             'SELECT node_id FROM question_node_mapping WHERE question_id = ?',
             (question_id,)
         ).fetchall()
         for nr in node_rows:
-            update_node_mastery(db, nr['node_id'])
+            nid = nr['node_id']
+            # 1. Fast in-memory sliding-window correctness update
+            from practice.repository.cache_proxy import cache_service
+            cache_service.lpush_fixed_window(
+                f"practice:node:theta_window:{nid}", 1 if is_correct else 0
+            )
+            # 2. Offload heavy persistence recompute to background worker
+            from practice.scheduler.worker import task_queue, GraphTaskType
+            task_queue.put({
+                "type": GraphTaskType.UPDATE_NODE_MASTERY,
+                "payload": {"node_id": nid, "question_id": question_id},
+            }, block=False)
     except Exception:
         pass
 
@@ -567,7 +578,16 @@ def session_update():
                     (question_id,)
                 ).fetchall()
                 for n in nodes:
-                    update_node_mastery(db, n['node_id'])
+                    nid = n['node_id']
+                    from practice.repository.cache_proxy import cache_service
+                    cache_service.lpush_fixed_window(
+                        f"practice:node:theta_window:{nid}", 1
+                    )
+                    from practice.scheduler.worker import task_queue, GraphTaskType
+                    task_queue.put({
+                        "type": GraphTaskType.UPDATE_NODE_MASTERY,
+                        "payload": {"node_id": nid, "question_id": question_id},
+                    }, block=False)
             except Exception:
                 pass
 

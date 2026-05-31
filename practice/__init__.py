@@ -57,3 +57,24 @@ from practice.routes.recommend import recommend_bp # noqa: E402
 practice_bp.register_blueprint(manage_bp)
 practice_bp.register_blueprint(graph_bp)
 practice_bp.register_blueprint(recommend_bp)
+
+# ----------------------------------------------------------------
+# Async worker — background daemon for heavy graph computation
+# ----------------------------------------------------------------
+
+def _sqlite_db_factory():
+    """Return a fresh, independent SQLite connection for the worker thread."""
+    import sqlite3
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+from practice.scheduler.worker import init_worker_thread  # noqa: E402
+
+try:
+    init_worker_thread(_sqlite_db_factory)
+except Exception:
+    import logging
+    logging.getLogger("Practice").warning(
+        "Background async-computation worker failed to mount"
+    )
