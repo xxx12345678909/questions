@@ -63,10 +63,15 @@ practice_bp.register_blueprint(recommend_bp)
 # ----------------------------------------------------------------
 
 def _sqlite_db_factory():
-    """Return a fresh, independent SQLite connection for the worker thread."""
+    """Return a fresh, independent SQLite connection for the worker thread.
+
+    Enables WAL journal mode so that concurrent reads (HTTP threads) and
+    writes (this worker) can coexist without SQLITE_BUSY conflicts.
+    """
     import sqlite3
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
 from practice.scheduler.worker import init_worker_thread  # noqa: E402
