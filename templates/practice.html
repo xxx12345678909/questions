@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能刷题 · 忘记曲线调度</title>
+    <link rel="stylesheet" href="/static/css/practice.css?v=9">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+    <div class="practice-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <a href="/" class="back-link">← 返回聊天</a>
+            </div>
+            <div class="sidebar-title">📝 智能刷题</div>
+
+            <!-- Stats -->
+            <div class="sidebar-stats" id="sidebarStats">
+                <div class="stat-row"><span class="stat-label">总题数</span><span class="stat-value" id="statTotal">0</span></div>
+                <div class="stat-row"><span class="stat-label">正确率</span><span class="stat-value" id="statAccuracy">-</span></div>
+                <div class="stat-row"><span class="stat-label">今日已答</span><span class="stat-value" id="statToday">0</span></div>
+            </div>
+
+            <!-- Filters -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">筛选条件</div>
+                <select class="sidebar-select" id="filterSubject">
+                    <option value="">全部科目</option>
+                    <option value="高数">高数</option>
+                    <option value="线代">线代</option>
+                    <option value="408">408</option>
+                    <option value="英语">英语</option>
+                    <option value="概率">概率</option>
+                    <option value="政治">政治</option>
+                    <option value="算法">算法</option>
+                    <option value="数学">数学</option>
+                </select>
+                <select class="sidebar-select" id="filterType">
+                    <option value="">全部题型</option>
+                    <option value="选择题">选择题</option>
+                    <option value="填空题">填空题</option>
+                    <option value="解答题">解答题</option>
+                    <option value="证明题">证明题</option>
+                </select>
+            </div>
+
+            <!-- Actions -->
+            <div class="sidebar-actions">
+                <button class="btn-sidebar btn-primary" id="btnRecommend">🎯 今日推荐</button>
+                <button class="btn-sidebar btn-secondary-outline" id="btnRandom">🎲 随机抽题</button>
+            </div>
+
+            <!-- Recent Records -->
+            <div class="sidebar-section flex-1">
+                <div class="sidebar-section-title">最近作答</div>
+                <div class="record-list" id="recentRecords">
+                    <div class="empty-hint">暂无记录</div>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <button class="btn-sidebar btn-secondary-outline" id="btnSettings">⚙️ 设置</button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Dashboard View -->
+            <div class="view" id="dashboardView">
+                <!-- Tabs -->
+                <div class="tabs">
+                    <button class="tab active" data-tab="recommend">今日推荐</button>
+                    <button class="tab" data-tab="bank">题库管理</button>
+                    <button class="tab" data-tab="upload">上传PDF</button>
+                    <button class="tab" data-tab="graph">知识图谱</button>
+                    <button class="tab" data-tab="unattributed">未归属</button>
+                </div>
+
+                <!-- Recommend Tab -->
+                <div class="tab-content active" id="tabRecommend">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>📋 今日推荐题目</h3>
+                            <span class="badge" id="recommendCount">0题</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="recommend-breakdown" id="recommendBreakdown"></div>
+                            <div class="question-list" id="recommendList">
+                                <div class="empty-hint">点击「今日推荐」获取个性化题目列表</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bank Tab -->
+                <div class="tab-content" id="tabBank">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>📚 题库</h3>
+                            <div class="card-header-actions">
+                                <input type="text" class="input-search" id="bankSearch" placeholder="搜索题目...">
+                                <button class="btn-sm btn-primary" id="btnAddQuestion">+ 新建题目</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="question-list" id="bankList">
+                                <div class="empty-hint">暂无题目，点击「新建题目」添加</div>
+                            </div>
+                            <div class="pagination" id="bankPagination"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Upload Tab -->
+                <div class="tab-content" id="tabUpload">
+                    <!-- PDF Viewer + Crop Pipeline -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>📄 PDF 裁切流水线</h3>
+                            <span class="text-muted" id="pdfInfo"></span>
+                        </div>
+                        <div class="card-body">
+                            <div class="upload-area" id="pdfDropArea">
+                                <div class="upload-hint">拖拽 PDF 到此处，或点击选择</div>
+                                <input type="file" id="pdfInput" accept=".pdf" hidden>
+                                <button class="btn-primary" id="btnUploadPdf">选择 PDF 文件</button>
+                            </div>
+                            <div class="pdf-viewer" id="pdfViewer" style="display:none">
+                                <div class="pdf-toolbar">
+                                    <span class="key-hint">A 上一页</span>
+                                    <span id="pdfPageInfo" style="font-weight:600"></span>
+                                    <span class="key-hint">D 下一页</span>
+                                    <span class="key-hint key-upload">S 上传</span>
+                                    <span class="key-hint">W 清空</span>
+                                    <button class="btn-sm btn-secondary-outline" id="btnPdfClose">关闭</button>
+                                </div>
+                                <div class="pdf-canvas-wrapper" id="pdfCanvasWrapper">
+                                    <canvas id="pdfCanvas"></canvas>
+                                    <div class="crop-overlay" id="cropOverlay"></div>
+                                </div>
+                                <div class="pipeline-status" id="pipelineStatus">
+                                    <span class="pipeline-step" id="stepHint">左键框选<strong>题目</strong> · 右键框选<strong>答案</strong> · S键上传</span>
+                                    <span class="pipeline-dot" id="dotQuestion">○</span>
+                                    <span class="pipeline-arrow">→</span>
+                                    <span class="pipeline-dot" id="dotAnswer">○</span>
+                                    <span class="pipeline-label">题目</span>
+                                    <span class="pipeline-label">答案</span>
+                                </div>
+                                <div class="pipeline-actions">
+                                    <button class="btn-sm btn-secondary-outline" id="btnResetCrop">重置裁切</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Captured Dual Preview + Upload -->
+                    <div class="card" id="captureCard" style="display:none">
+                        <div class="card-header"><h3>🖼 裁切结果</h3><span class="text-muted" id="captureCount"></span></div>
+                        <div class="card-body">
+                            <div class="capture-dual">
+                                <div class="capture-panel">
+                                    <div class="capture-label">题目</div>
+                                    <img id="qPreview" class="capture-preview">
+                                </div>
+                                <div class="capture-panel">
+                                    <div class="capture-label">答案</div>
+                                    <img id="aPreview" class="capture-preview">
+                                </div>
+                            </div>
+                            <div class="form-row" style="margin-top:12px">
+                                <div class="form-group flex-1">
+                                    <label>答案文字</label>
+                                    <input type="text" id="imgAnswer" placeholder="输入正确答案（用于文本比对）">
+                                </div>
+                                <div class="form-group flex-1">
+                                    <label>科目</label>
+                                    <select id="imgSubject">
+                                        <option value="">选择科目</option>
+                                        <option value="高数">高数</option>
+                                        <option value="线代">线代</option>
+                                        <option value="408">408</option>
+                                        <option value="英语">英语</option>
+                                        <option value="概率">概率</option>
+                                        <option value="算法">算法</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group flex-1">
+                                    <label>题型</label>
+                                    <select id="imgType">
+                                        <option value="选择题">选择题</option>
+                                        <option value="填空题">填空题</option>
+                                        <option value="解答题">解答题</option>
+                                        <option value="证明题">证明题</option>
+                                    </select>
+                                </div>
+                                <div class="form-group flex-1">
+                                    <label>难度</label>
+                                    <input type="number" id="imgDifficulty" value="0.5" min="0" max="1" step="0.1">
+                                </div>
+                                <div class="form-group flex-1">
+                                    <label>耗时(min)</label>
+                                    <input type="number" id="imgCost" value="5" min="1" max="60">
+                                </div>
+                            </div>
+                            <div class="capture-actions">
+                                <button class="btn-primary" id="btnUploadImage">⬆ 上传题目 (S)</button>
+                                <button class="btn-secondary-outline" id="btnDiscardCrop">丢弃</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Manual Image Upload -->
+                    <div class="card">
+                        <div class="card-header"><h3>🖼 手动上传图片</h3></div>
+                        <div class="card-body">
+                            <div class="upload-area" id="imageDropArea">
+                                <div class="upload-hint">拖拽图片到此处粘贴，或 Ctrl+V 粘贴截图</div>
+                                <input type="file" id="imageInput" accept="image/*" hidden>
+                                <button class="btn-primary" id="btnSelectImage">选择图片文件</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Text PDF Preview (legacy) -->
+                    <div class="card" id="textPdfCard" style="display:none">
+                        <div class="card-header">
+                            <h4>提取的文本内容</h4>
+                            <span class="text-muted" id="uploadInfo"></span>
+                        </div>
+                        <div class="card-body">
+                            <pre class="text-preview" id="uploadText"></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Knowledge Graph Tab -->
+                <div class="tab-content" id="tabGraph">
+                    <div class="graph-toolbar">
+                        <div class="graph-toolbar-left">
+                            <button class="btn-sm btn-primary" id="btnRefreshGraph">刷新图谱</button>
+                            <button class="btn-sm btn-secondary-outline" id="btnFitGraph">适应画布</button>
+                            <span class="graph-legend">
+                                <span class="legend-dot" style="background:#22c55e"></span> 掌握
+                                <span class="legend-dot" style="background:#eab308"></span> 一般
+                                <span class="legend-dot" style="background:#ef4444"></span> 薄弱
+                            </span>
+                        </div>
+                        <div class="graph-toolbar-right">
+                            <span class="text-muted">拖拽节点移动 · 滚轮缩放 · 右键节点查看路径</span>
+                        </div>
+                    </div>
+                    <div class="graph-main">
+                        <div class="graph-canvas-container">
+                            <div id="knowledgeGraph" style="width:100%;height:100%"></div>
+                        </div>
+                        <div class="graph-sidebar" id="graphSidebar">
+                            <div class="graph-sidebar-section">
+                                <h4>新建知识点</h4>
+                                <div class="node-creator">
+                                    <input type="text" id="newNodeName" class="graph-input" placeholder="知识点名称">
+                                    <select id="newNodeSubject" class="graph-select">
+                                        <option value="">选择科目</option>
+                                        <option value="高数">高数</option>
+                                        <option value="线代">线代</option>
+                                        <option value="408">408</option>
+                                        <option value="英语">英语</option>
+                                        <option value="概率">概率</option>
+                                        <option value="算法">算法</option>
+                                        <option value="数学">数学</option>
+                                        <option value="政治">政治</option>
+                                    </select>
+                                    <button class="btn-sm btn-primary" id="btnCreateNode" style="width:100%">创建知识点</button>
+                                </div>
+                            </div>
+                            <div class="graph-sidebar-section">
+                                <h4>依赖编辑</h4>
+                                <div class="edge-editor">
+                                    <p style="font-size:11px;color:#64748b;margin:0 0 4px">A 依赖于 B 的前置知识</p>
+                                    <select id="edgeSource" class="graph-select">
+                                        <option value="">A: 被依赖的节点</option>
+                                    </select>
+                                    <span style="text-align:center;font-size:12px;color:#94a3b8">↑ 需要先掌握 ↓</span>
+                                    <select id="edgeTarget" class="graph-select">
+                                        <option value="">B: 前置知识点</option>
+                                    </select>
+                                    <div class="edge-actions">
+                                        <button class="btn-sm btn-primary" id="btnAddEdge">添加依赖</button>
+                                        <button class="btn-sm btn-danger-outline" id="btnRemoveEdge">删除依赖</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="graph-sidebar-section">
+                                <h4>知识点详情</h4>
+                                <div id="nodeDetail" class="node-detail-empty">点击节点查看详情</div>
+                            </div>
+                            <div class="graph-sidebar-section">
+                                <h4>学习路径</h4>
+                                <div id="pathResult" class="path-result-empty">右键节点规划复习路径</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Unattributed Tab -->
+                <div class="tab-content" id="tabUnattributed">
+                    <div class="card" id="unattributedListCard">
+                        <div class="card-header">
+                            <h3>未归属题目池</h3>
+                            <div class="card-header-actions">
+                                <span class="unattributed-count" id="unattributedCount">0 题未归属</span>
+                                <input type="text" class="input-search" id="unattributedSearch" placeholder="搜索题目...">
+                                <button class="btn-sm btn-primary" id="btnSingleView" onclick="openSingleView()">单题模式</button>
+                            </div>
+                        </div>
+                        <div class="card-body" style="padding: 0;">
+                            <div class="unattributed-hint">
+                                下列题目未关联任何知识节点，算法前置依赖阻尼 ω<sub>q</sub> 无法生效。请逐题补充参数并关联知识节点。
+                            </div>
+                            <div class="unattributed-list" id="unattributedList">
+                                <div class="empty-hint">所有题目均已归属，干得漂亮！</div>
+                            </div>
+                            <div class="pagination" id="unattributedPagination"></div>
+                        </div>
+                    </div>
+
+                    <!-- Single View Mode -->
+                    <div class="card" id="singleViewCard" style="display:none">
+                        <div class="card-header">
+                            <h3 id="singleViewTitle">单题模式</h3>
+                            <div class="card-header-actions">
+                                <span class="single-nav-hint">A/D 切换 · S 保存 · W 清空</span>
+                                <button class="btn-sm btn-secondary-outline" onclick="closeSingleView()">返回列表</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="single-view-content" id="singleViewContent"></div>
+                            <div class="single-nav-row">
+                                <button class="btn-sm btn-secondary-outline" id="btnSinglePrev">← 上一题 (A)</button>
+                                <span class="single-progress" id="singleProgress">1 / 41</span>
+                                <button class="btn-sm btn-primary" id="btnSingleSave" onclick="saveSingleView()">保存 (S)</button>
+                                <button class="btn-sm btn-secondary-outline" onclick="clearSingleEdits()">清空 (W)</button>
+                                <button class="btn-sm btn-secondary-outline" id="btnSingleNext">下一题 (D) →</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Practice View -->
+            <div class="view" id="practiceView" style="display:none">
+                <div class="practice-nav">
+                    <button class="btn-back" id="btnBackDashboard">← 返回列表</button>
+                    <span class="practice-progress" id="practiceProgress"></span>
+                    <span></span>
+                </div>
+
+                <!-- Question + Canvas Combined -->
+                <div class="card question-canvas-card">
+                    <div class="question-header">
+                        <span class="tag tag-subject" id="qSubject"></span>
+                        <span class="tag tag-type" id="qType"></span>
+                        <span class="tag tag-pool" id="qPool"></span>
+                        <div class="canvas-toolbar" id="canvasToolbar">
+                            <button class="tool-btn active" data-tool="pen" title="画笔">🖊</button>
+                            <button class="tool-btn" data-tool="eraser" title="橡皮擦">🧹</button>
+                            <input type="color" class="color-picker" id="penColor" value="#1e293b" title="颜色">
+                            <input type="range" class="width-slider" id="penWidth" min="1" max="10" value="2" title="粗细">
+                            <button class="tool-btn" id="btnUndo" title="撤销">↩</button>
+                            <button class="tool-btn" id="btnClear" title="清空">🗑</button>
+                        </div>
+                    </div>
+                    <div class="question-canvas-body">
+                        <!-- Hidden img for loading question images onto canvas -->
+                        <img id="qImage" style="display:none">
+                        <!-- Single continuous canvas: question renders as background, user draws on top -->
+                        <div class="canvas-wrapper" id="canvasWrapper">
+                            <canvas id="practiceCanvas"></canvas>
+                            <div class="canvas-resize-handle" id="canvasResizeHandle" title="上下拖拽调整作答区域高度">
+                                <span class="resize-grip">⠿⠿⠿</span>
+                            </div>
+                        </div>
+                        <!-- Answer images, rendered directly below canvas -->
+                        <div class="answer-images-area" id="answerImagesArea" style="display:none">
+                            <div class="answer-images-label">📖 答案图像</div>
+                            <div id="answerImagesContainer"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="practice-actions">
+                    <button class="btn-action btn-show-answer" id="btnShowAnswer">👁 显示答案</button>
+                    <button class="btn-action btn-correct" id="btnCorrect">✓ 答对了</button>
+                    <button class="btn-action btn-wrong" id="btnWrong">✗ 答错了</button>
+                </div>
+
+                <!-- Answer Text Reveal -->
+                <div class="card answer-card" id="answerCard" style="display:none">
+                    <div class="card-header"><h3>📖 答案文字</h3></div>
+                    <div class="card-body"><div class="answer-content" id="answerContent"></div></div>
+                </div>
+
+                <!-- Feedback -->
+                <div class="card feedback-card" id="feedbackCard" style="display:none">
+                    <div class="card-header"><h3>📊 记忆模型更新</h3></div>
+                    <div class="card-body">
+                        <div class="feedback-grid" id="feedbackContent"></div>
+                    </div>
+                </div>
+
+                <!-- Next -->
+                <div class="next-action" id="nextAction" style="display:none">
+                    <button class="btn-primary btn-large" id="btnNext">下一题 →</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Question Form Modal -->
+    <div class="modal-overlay" id="questionModal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3 id="modalTitle">新建题目</h3>
+                <button class="modal-close" id="closeQuestionModal">×</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editQuestionId">
+                <div class="form-group">
+                    <label>题目内容 *</label>
+                    <textarea id="formContent" rows="4" placeholder="输入题目内容..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label>答案 *</label>
+                    <textarea id="formAnswer" rows="3" placeholder="输入正确答案..."></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>科目</label>
+                        <select id="formSubject">
+                            <option value="">选择科目</option>
+                            <option value="高数">高数</option>
+                            <option value="线代">线代</option>
+                            <option value="408">408</option>
+                            <option value="英语">英语</option>
+                            <option value="概率">概率</option>
+                            <option value="政治">政治</option>
+                            <option value="算法">算法</option>
+                            <option value="数学">数学</option>
+                        </select>
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>题型</label>
+                        <select id="formType">
+                            <option value="">选择题型</option>
+                            <option value="选择题">选择题</option>
+                            <option value="填空题">填空题</option>
+                            <option value="解答题">解答题</option>
+                            <option value="证明题">证明题</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>难度 (0-1)</label>
+                        <input type="number" id="formDifficulty" value="0.5" min="0" max="1" step="0.1">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>预估时间 (分钟)</label>
+                        <input type="number" id="formCost" value="5" min="1" max="60">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>关联知识点</label>
+                    <div id="formKnowledgeNodes" class="knowledge-checkboxes">
+                        <span class="text-muted" style="font-size:12px">加载中...</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary-outline" id="cancelQuestionModal">取消</button>
+                <button class="btn-primary" id="saveQuestion">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>⚙️ 设置</h3>
+                <button class="modal-close" id="closeSettings">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>每日题目预算 (10-100)</label>
+                    <input type="number" id="setBudget" min="10" max="100">
+                </div>
+                <div class="form-group">
+                    <label>复习比例 (0-1)</label>
+                    <input type="number" id="setReviewRatio" min="0" max="1" step="0.05">
+                </div>
+                <div class="form-group">
+                    <label>错题比例 (0-1)</label>
+                    <input type="number" id="setWrongRatio" min="0" max="1" step="0.05">
+                </div>
+                <div class="form-group">
+                    <label>新题比例 (0-1)</label>
+                    <input type="number" id="setNewRatio" min="0" max="1" step="0.05">
+                </div>
+                <div class="form-group">
+                    <label>复习阈值 (0.1-0.9)</label>
+                    <input type="number" id="setThreshold" min="0.1" max="0.9" step="0.05">
+                </div>
+                <div class="form-group">
+                    <label>最大连续同类题量 (1-20)</label>
+                    <input type="number" id="setMaxConsecutive" min="1" max="20">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-danger-outline" id="btnResetQuestions">重置为新题</button>
+                <div style="flex:1"></div>
+                <button class="btn-secondary-outline" id="cancelSettings">取消</button>
+                <button class="btn-primary" id="saveSettings">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+    <script src="/static/js/practice/state.js?v=11"></script>
+    <script src="/static/js/practice/ui.js?v=10"></script>
+    <script src="/static/js/practice/api.js?v=11"></script>
+    <script src="/static/js/practice/canvas.js?v=10"></script>
+    <script src="/static/js/practice/pdf.js?v=11"></script>
+    <script src="/static/js/practice/graph.js?v=11"></script>
+    <script src="/static/js/practice/main.js?v=11"></script>
+</body>
+</html>
