@@ -270,6 +270,38 @@ def _migrate_v5_irt_schema():
     db.close()
 
 
+def _migrate_v6_cat_schema():
+    """v6: Add CAT (Computer Adaptive Testing) exam session tables."""
+    db = sqlite3.connect(DATABASE)
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS cat_exam_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            current_theta REAL DEFAULT 0.0,
+            task_count INTEGER DEFAULT 0,
+            max_tasks INTEGER DEFAULT 20,
+            is_completed INTEGER DEFAULT 0,
+            question_history TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS cat_exam_details (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            question_id INTEGER NOT NULL,
+            user_answer TEXT,
+            is_correct INTEGER,
+            theta_before REAL,
+            theta_after REAL,
+            response_time_secs INTEGER,
+            FOREIGN KEY(session_id) REFERENCES cat_exam_sessions(id)
+        )
+    ''')
+    db.commit()
+    db.close()
+
+
 # ================================================================
 # Backward-compatible re-exports (canonical locations in repository/)
 # ================================================================

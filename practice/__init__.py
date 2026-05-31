@@ -40,7 +40,7 @@ DEFAULT_CONFIG = {
 }
 
 # Database initialization
-from practice.db import init_db, _migrate_image_columns, _migrate_knowledge_tables, _migrate_v3_schema, _migrate_v4_schema, _migrate_v5_irt_schema  # noqa: E402
+from practice.db import init_db, _migrate_image_columns, _migrate_knowledge_tables, _migrate_v3_schema, _migrate_v4_schema, _migrate_v5_irt_schema, _migrate_v6_cat_schema  # noqa: E402
 
 init_db()
 _migrate_image_columns()
@@ -48,15 +48,18 @@ _migrate_knowledge_tables()
 _migrate_v3_schema()
 _migrate_v4_schema()
 _migrate_v5_irt_schema()
+_migrate_v6_cat_schema()
 
 # Register sub-blueprints on the main practice_bp
 from practice.routes.manage import manage_bp       # noqa: E402
 from practice.routes.graph import graph_bp         # noqa: E402
 from practice.routes.recommend import recommend_bp # noqa: E402
+from practice.routes.cat import cat_bp             # noqa: E402
 
 practice_bp.register_blueprint(manage_bp)
 practice_bp.register_blueprint(graph_bp)
 practice_bp.register_blueprint(recommend_bp)
+practice_bp.register_blueprint(cat_bp)
 
 # ----------------------------------------------------------------
 # Async worker — background daemon for heavy graph computation

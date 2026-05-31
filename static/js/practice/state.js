@@ -39,6 +39,25 @@ const state = {
     unattributedQuestions: [],
     unattributedIndex: 0,
     singleViewKnowledgeNodes: [],
+
+    // CAT mode
+    catMode: false,
+    catQuestions: [],
+    catCurrentIdx: 0,
+    catStrokesCache: {},
+    catSessionId: null,
+    catMaxTasks: 20,
+
+    // Record review mode
+    reviewMode: false,
+    reviewRecordId: null,
+    reviewRecordData: null,
+
+    // Session review mode
+    sessionReviewMode: false,
+    sessionReviewId: null,
+    sessionReviewRecords: [],
+    sessionReviewIdx: 0,
 };
 
 /* ===== DOM Cache (populated by cacheDom in main.js) ===== */
@@ -55,7 +74,7 @@ function cacheDom() {
         'btnRecommend', 'btnRandom', 'btnSettings',
         'recentRecords',
         'dashboardView', 'practiceView',
-        'tabRecommend', 'tabBank', 'tabUpload', 'tabGraph', 'tabUnattributed',
+        'tabRecommend', 'tabBank', 'tabUpload', 'tabGraph', 'tabCat', 'tabUnattributed',
         'recommendCount', 'recommendBreakdown', 'recommendList',
         'bankSearch', 'bankList', 'bankPagination', 'btnAddQuestion',
         'pdfDropArea', 'pdfInput', 'btnUploadPdf', 'pdfViewer',
@@ -89,6 +108,11 @@ function cacheDom() {
         'unattributedCount', 'unattributedSearch', 'unattributedList', 'unattributedPagination',
         'btnSingleView', 'singleViewCard', 'unattributedListCard', 'singleViewTitle', 'singleViewContent',
         'singleProgress', 'btnSinglePrev', 'btnSingleNext', 'btnSingleSave',
+        // CAT
+        'catPrevBtn', 'catNextBtn', 'catSubmitBtn', 'catComparison',
+        'catPracticeActions', 'catNavActions',
+        // Record review
+        'recordReviewActions', 'btnMarkCorrect', 'btnMarkWrong', 'recordReviewStatus',
     ];
     ids.forEach(id => { dom[id] = $(id); });
 }

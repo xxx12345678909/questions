@@ -13,19 +13,113 @@ async function loadStats() {
 
 async function loadRecentRecords() {
     try {
-        const res = await fetch('/practice/api/records?limit=10');
-        const data = await res.json();
-        if (data.records.length === 0) {
+        // Load sessions + individual records in parallel
+        const [sessRes, recRes] = await Promise.all([
+            fetch('/practice/api/cat/sessions?limit=5'),
+            fetch('/practice/api/records?limit=5'),
+        ]);
+        const sessions = await sessRes.json();
+        const records = await recRes.json();
+
+        const hasSessions = sessions.sessions && sessions.sessions.length > 0;
+        const hasRecords = records.records && records.records.length > 0;
+
+        if (!hasSessions && !hasRecords) {
             dom.recentRecords.innerHTML = '<div class="empty-hint">暂无记录</div>';
             return;
         }
-        dom.recentRecords.innerHTML = data.records.map(r => `
-            <div class="record-item ${r.is_correct ? 'correct' : 'wrong'}">
-                <div>${escapeHtml(r.content || '题目 #' + r.question_id)}</div>
-                <div class="record-meta">${r.time_spent}min · ${r.is_correct ? '✓' : '✗'} · ${r.subject || ''}</div>
-            </div>
-        `).join('');
+
+        let html = '';
+
+        // Exam sessions
+        if (hasSessions) {
+            html += '<div class="sidebar-section-title">模考记录</div>';
+            sessions.sessions.forEach(s => {
+                const date = s.created_at ? s.created_at.slice(5, 16).replace('T', ' ') : '';
+                html += `
+                <div class="record-item session-item" data-session-id="${s.id}">
+                    <div>模考 #${s.id} · ${s.task_count || s.record_count}题</div>
+                    <div class="record-meta">${date} · θ=${(s.current_theta || 0).toFixed(2)}</div>
+                </div>`;
+            });
+        }
+
+        // Individual non-CAT records
+        if (hasRecords) {
+            html += '<div class="sidebar-section-title" style="margin-top:8px">单题记录</div>';
+            records.records.forEach(r => {
+                const hasStrokes = r.strokes && r.strokes !== '[]';
+                const cls = r.is_correct ? 'correct' : (r.time_spent > 0 ? 'wrong' : '');
+                const statusIcon = r.time_spent > 0 ? (r.is_correct ? '✓' : '✗') : (hasStrokes ? '✎' : '·');
+                html += `
+                <div class="record-item ${cls}" data-record-id="${r.id}">
+                    <div>${escapeHtml(r.content || '题目 #' + r.question_id)}</div>
+                    <div class="record-meta">${r.time_spent > 0 ? r.time_spent + 'min' : 'CAT'} · ${statusIcon} · ${r.subject || ''}</div>
+                </div>`;
+            });
+        }
+
+        dom.recentRecords.innerHTML = html;
+
+        // Bind click handlers
+        dom.recentRecords.querySelectorAll('.session-item').forEach(el => {
+            el.addEventListener('click', () => {
+                startSessionReview(parseInt(el.dataset.sessionId));
+            });
+        });
+        dom.recentRecords.querySelectorAll('.record-item:not(.session-item)').forEach(el => {
+            el.addEventListener('click', () => {
+                openRecordReview(parseInt(el.dataset.recordId));
+            });
+        });
     } catch (e) { /* silent */ }
+}
+
+/* ---- Record Review ---- */
+async function openRecordReview(recordId) {
+    try {
+        const res = await fetch(`/practice/api/records/${recordId}`);
+        const data = await res.json();
+        if (data.error) { showToast(data.error, true); return; }
+        startRecordReview(data.record);
+    } catch (e) {
+        showToast('加载记录失败: ' + e.message, true);
+    }
+}
+
+async function annotateRecord(isCorrect) {
+    let recordId;
+    if (state.sessionReviewMode) {
+        // Session review mode: annotate the currently viewed record
+        const rec = state.sessionReviewRecords[state.sessionReviewIdx];
+        if (!rec) return;
+        recordId = rec.id;
+    } else if (state.reviewRecordId) {
+        recordId = state.reviewRecordId;
+    } else {
+        return;
+    }
+
+    try {
+        const res = await fetch(`/practice/api/records/${recordId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_correct: isCorrect }),
+        });
+        const data = await res.json();
+        if (data.error) { showToast(data.error, true); return; }
+        updateRecordReviewButtons(isCorrect);
+        showToast(data.message);
+        loadRecentRecords();
+
+        // Track dirty state in session review records
+        if (state.sessionReviewMode) {
+            const rec = state.sessionReviewRecords[state.sessionReviewIdx];
+            if (rec) { rec._dirtyIsCorrect = isCorrect; rec.is_correct = isCorrect; }
+        }
+    } catch (e) {
+        showToast('标注失败: ' + e.message, true);
+    }
 }
 
 /* ---- Recommendations ---- */

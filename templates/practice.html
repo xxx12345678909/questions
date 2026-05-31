@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>智能刷题 · 忘记曲线调度</title>
-    <link rel="stylesheet" href="/static/css/practice.css?v=9">
+    <link rel="stylesheet" href="/static/css/practice.css?v=11">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
@@ -75,6 +75,7 @@
                     <button class="tab" data-tab="bank">题库管理</button>
                     <button class="tab" data-tab="upload">上传PDF</button>
                     <button class="tab" data-tab="graph">知识图谱</button>
+                    <button class="tab" data-tab="cat">CAT模考</button>
                     <button class="tab" data-tab="unattributed">未归属</button>
                 </div>
 
@@ -305,6 +306,60 @@
                     </div>
                 </div>
 
+                <!-- CAT模考 Tab -->
+                <div class="tab-content" id="tabCat">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>🎯 IRT 自适应模考 (CAT)</h3>
+                            <span class="badge" id="catBadge">未开始</span>
+                        </div>
+                        <div class="card-body">
+                            <!-- Start state -->
+                            <div class="cat-start" id="catStart">
+                                <p class="cat-desc">基于项目反应理论（IRT 3PL），系统根据你的实时作答表现动态调整题目难度，在最少题量内精准测出你的能力边界。</p>
+                                <div class="cat-config">
+                                    <label>最大题量</label>
+                                    <input type="number" id="catMaxTasks" value="20" min="5" max="100" step="5">
+                                </div>
+                                <button class="btn-primary" id="btnCatStart">开始模考</button>
+                            </div>
+
+                            <!-- Active session -->
+                            <div class="cat-active" id="catActive" style="display:none">
+                                <div class="cat-progress-bar" id="catProgressBar"></div>
+                                <div class="cat-info">
+                                    <span>第 <strong id="catCurrentIdx">0</strong> / <span id="catMaxDisplay">20</span> 题</span>
+                                    <span>θ = <strong class="cat-theta" id="catTheta">0.0000</strong></span>
+                                </div>
+                                <div class="cat-question" id="catQuestion">
+                                    <div class="cat-q-content" id="catQContent"></div>
+                                </div>
+                                <div class="cat-actions" id="catActions">
+                                    <button class="btn-action btn-correct" id="btnCatCorrect">✓ 答对了</button>
+                                    <button class="btn-action btn-wrong" id="btnCatWrong">✗ 答错了</button>
+                                </div>
+                            </div>
+
+                            <!-- Completed state -->
+                            <div class="cat-done" id="catDone" style="display:none">
+                                <div class="cat-done-icon">🏁</div>
+                                <h3 class="cat-done-title">模考完成</h3>
+                                <div class="cat-done-stats">
+                                    <div class="cat-done-stat">
+                                        <div class="cat-done-stat-value" id="catFinalTheta">0.00</div>
+                                        <div class="cat-done-stat-label">最终能力值 θ</div>
+                                    </div>
+                                    <div class="cat-done-stat">
+                                        <div class="cat-done-stat-value" id="catFinalTasks">0</div>
+                                        <div class="cat-done-stat-label">作答题目数</div>
+                                    </div>
+                                </div>
+                                <button class="btn-primary" id="btnCatRestart">再来一次</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Unattributed Tab -->
                 <div class="tab-content" id="tabUnattributed">
                     <div class="card" id="unattributedListCard">
@@ -355,6 +410,13 @@
                 <div class="practice-nav">
                     <button class="btn-back" id="btnBackDashboard">← 返回列表</button>
                     <span class="practice-progress" id="practiceProgress"></span>
+                    <!-- CAT navigation (hidden outside CAT mode) -->
+                    <div class="cat-nav-actions" id="catNavActions" style="display:none">
+                        <button class="btn-sm btn-secondary-outline" id="catPrevBtn">← 上一题</button>
+                        <span class="cat-nav-progress" id="catNavProgress"></span>
+                        <button class="btn-sm btn-secondary-outline" id="catNextBtn">下一题 →</button>
+                        <button class="btn-sm btn-primary cat-submit-btn" id="catSubmitBtn">交卷</button>
+                    </div>
                     <span></span>
                 </div>
 
@@ -391,11 +453,26 @@
                     </div>
                 </div>
 
-                <!-- Actions -->
-                <div class="practice-actions">
+                <!-- Actions (hidden in CAT mode) -->
+                <div class="practice-actions" id="catPracticeActions">
                     <button class="btn-action btn-show-answer" id="btnShowAnswer">👁 显示答案</button>
                     <button class="btn-action btn-correct" id="btnCorrect">✓ 答对了</button>
                     <button class="btn-action btn-wrong" id="btnWrong">✗ 答错了</button>
+                </div>
+
+                <!-- Record Review Annotation (visible in review mode only) -->
+                <div class="record-review-actions" id="recordReviewActions" style="display:none">
+                    <button class="btn-action btn-correct" id="btnMarkCorrect">✓ 标记正确</button>
+                    <button class="btn-action btn-wrong" id="btnMarkWrong">✗ 标记错误</button>
+                    <span class="record-review-status" id="recordReviewStatus"></span>
+                </div>
+
+                <!-- CAT Comparison Results -->
+                <div class="cat-comparison" id="catComparison" style="display:none">
+                    <div class="card">
+                        <div class="card-header"><h3>交卷结果对比</h3><span class="badge" id="catCompCount"></span></div>
+                        <div class="card-body" id="catCompList"></div>
+                    </div>
                 </div>
 
                 <!-- Answer Text Reveal -->
@@ -533,12 +610,13 @@
     <div class="toast" id="toast"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
-    <script src="/static/js/practice/state.js?v=11"></script>
+    <script src="/static/js/practice/state.js?v=13"></script>
     <script src="/static/js/practice/ui.js?v=10"></script>
-    <script src="/static/js/practice/api.js?v=11"></script>
+    <script src="/static/js/practice/api.js?v=14"></script>
     <script src="/static/js/practice/canvas.js?v=10"></script>
     <script src="/static/js/practice/pdf.js?v=11"></script>
     <script src="/static/js/practice/graph.js?v=11"></script>
-    <script src="/static/js/practice/main.js?v=11"></script>
+    <script src="/static/js/practice/main.js?v=15"></script>
+    <script src="/static/js/practice/cat.js?v=5"></script>
 </body>
 </html>

@@ -137,6 +137,10 @@ function bindEvents() {
     dom.btnCorrect.addEventListener('click', () => submitAnswer(true));
     dom.btnWrong.addEventListener('click', () => submitAnswer(false));
 
+    // Record review annotation
+    dom.btnMarkCorrect.addEventListener('click', () => annotateRecord(true));
+    dom.btnMarkWrong.addEventListener('click', () => annotateRecord(false));
+
     // Canvas toolbar
     dom.canvasToolbar.addEventListener('click', e => {
         const btn = e.target.closest('.tool-btn');
@@ -212,6 +216,24 @@ function bindEvents() {
     // Modal backdrop clicks
     dom.questionModal.addEventListener('click', e => { if (e.target === dom.questionModal) closeQuestionModal(); });
     dom.settingsModal.addEventListener('click', e => { if (e.target === dom.settingsModal) closeSettings(); });
+
+    // Keyboard shortcuts: A/D for prev/next in CAT mode & session review mode
+    document.addEventListener('keydown', e => {
+        if (dom.practiceView.style.display === 'none') return;
+        if (!state.catMode && !state.sessionReviewMode) return;
+        // Ignore when typing in inputs
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+        if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            if (state.sessionReviewMode) sessionReviewNavigate(-1);
+            else catPrevQuestion();
+        } else if (e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
+            e.preventDefault();
+            if (state.sessionReviewMode) sessionReviewNavigate(1);
+            else catNextQuestion();
+        }
+    });
 }
 
 /* ---- Practice flow ---- */
@@ -223,6 +245,15 @@ function startPractice(question) {
 
     dom.dashboardView.style.display = 'none';
     dom.practiceView.style.display = '';
+
+    // Ensure correct UI state for non-CAT practice
+    if (!state.catMode) {
+        dom.catPracticeActions.style.display = '';
+        dom.catNavActions.style.display = 'none';
+        dom.catComparison.style.display = 'none';
+        dom.btnBackDashboard.textContent = '← 返回列表';
+    }
+
     dom.answerCard.style.display = 'none';
     dom.feedbackCard.style.display = 'none';
     dom.nextAction.style.display = 'none';
@@ -271,7 +302,259 @@ function nextQuestion() {
     }
 }
 
+/* ---- Session Review Mode (模考为单位) ---- */
+async function startSessionReview(sessionId) {
+    try {
+        const res = await fetch(`/practice/api/cat/session/${sessionId}/records`);
+        const data = await res.json();
+        if (data.error) { showToast(data.error, true); return; }
+        if (!data.records || data.records.length === 0) {
+            showToast('该模考无答题记录', true); return;
+        }
+
+        state.sessionReviewMode = true;
+        state.sessionReviewId = sessionId;
+        state.sessionReviewRecords = data.records;
+        state.sessionReviewIdx = 0;
+
+        sessionReviewLoadQuestion(0);
+        showToast(`模考 #${sessionId} · ${data.records.length} 题`);
+    } catch (e) {
+        showToast('加载模考记录失败: ' + e.message, true);
+    }
+}
+
+function sessionReviewLoadQuestion(idx) {
+    if (idx < 0 || idx >= state.sessionReviewRecords.length) return;
+
+    // Save annotation state for current record before switching
+    const cur = state.sessionReviewRecords[state.sessionReviewIdx];
+    if (cur) {
+        cur._dirtyIsCorrect = state._lastAnnotationValue;
+    }
+
+    state.sessionReviewIdx = idx;
+    const rec = state.sessionReviewRecords[idx];
+    const q = rec.question;
+
+    const question = {
+        id: q.id,
+        content: q.content,
+        answer: q.answer,
+        content_type: q.content_type,
+        image_url: q.image_url,
+        answer_image_url: q.answer_image_url,
+        subject: q.subject,
+        type: q.type,
+        pool: 'review',
+    };
+    state.currentQuestion = question;
+    state.strokes = [];
+    state.currentStroke = null;
+    state.practiceStartTime = Date.now();
+
+    dom.dashboardView.style.display = 'none';
+    dom.practiceView.style.display = '';
+    dom.catNavActions.style.display = '';
+    dom.catPracticeActions.style.display = 'none';
+    dom.catComparison.style.display = 'none';
+    dom.recordReviewActions.style.display = '';
+    dom.feedbackCard.style.display = 'none';
+    dom.nextAction.style.display = 'none';
+    dom.canvasToolbar.style.display = 'none';
+    dom.btnBackDashboard.textContent = '← 返回列表';
+    dom.practiceProgress.textContent = `模考 #${state.sessionReviewId} · ${idx + 1}/${state.sessionReviewRecords.length}`;
+
+    dom.qSubject.textContent = question.subject || '未知';
+    dom.qType.textContent = question.type || '未知';
+    dom.qPool.textContent = '模考复盘';
+    dom.qPool.className = 'tag tag-pool review';
+
+    const answerImgUrl = q.answer_image_url;
+    if (answerImgUrl) {
+        dom.answerImagesArea.style.display = '';
+        dom.answerImagesContainer.innerHTML = `<img src="${answerImgUrl}" alt="答案图像">`;
+    } else {
+        dom.answerImagesArea.style.display = 'none';
+    }
+
+    // Show answer + annotation
+    dom.answerCard.style.display = '';
+    dom.answerContent.textContent = question.answer || '（无答案）';
+
+    const isCorrect = rec._dirtyIsCorrect !== undefined ? rec._dirtyIsCorrect : rec.is_correct;
+    state._lastAnnotationValue = isCorrect;
+    updateRecordReviewButtons(isCorrect);
+
+    // Update submit button label for session review
+    dom.catSubmitBtn.textContent = '返回';
+    dom.catSubmitBtn.style.background = '';
+    dom.catSubmitBtn.className = 'btn-sm btn-secondary-outline';
+    dom.catSubmitBtn.onclick = backToDashboard;
+
+    // Nav progress
+    document.getElementById('catNavProgress').textContent = `${idx + 1} / ${state.sessionReviewRecords.length}`;
+    dom.catPrevBtn.disabled = idx <= 0;
+    dom.catNextBtn.disabled = idx >= state.sessionReviewRecords.length - 1;
+
+    // Override nav button handlers for session review
+    dom.catPrevBtn.onclick = () => sessionReviewNavigate(-1);
+    dom.catNextBtn.onclick = () => sessionReviewNavigate(1);
+
+    // Render
+    if (q.content_type === 'image' && q.image_url) {
+        dom.qImage.src = q.image_url;
+        dom.qImage.onload = () => {
+            renderQuestionToCanvas(question);
+            loadRecordStrokes(rec.strokes);
+        };
+        if (dom.qImage.complete && dom.qImage.naturalWidth) {
+            dom.qImage.onload();
+        }
+    } else {
+        renderQuestionToCanvas(question);
+        loadRecordStrokes(rec.strokes);
+    }
+}
+
+function sessionReviewNavigate(delta) {
+    const newIdx = state.sessionReviewIdx + delta;
+    if (newIdx >= 0 && newIdx < state.sessionReviewRecords.length) {
+        sessionReviewLoadQuestion(newIdx);
+    }
+}
+
+/* ---- Record Review Mode ---- */
+function startRecordReview(record) {
+    state.reviewMode = true;
+    state.reviewRecordId = record.id;
+    state.reviewRecordData = record;
+
+    const q = record.question;
+    const question = {
+        id: q.id,
+        content: q.content,
+        answer: q.answer,
+        content_type: q.content_type,
+        image_url: q.image_url,
+        answer_image_url: q.answer_image_url,
+        subject: q.subject,
+        type: q.type,
+        pool: 'review',
+    };
+    state.currentQuestion = question;
+    state.strokes = [];
+    state.currentStroke = null;
+    state.practiceStartTime = Date.now();
+
+    dom.dashboardView.style.display = 'none';
+    dom.practiceView.style.display = '';
+    dom.catNavActions.style.display = 'none';
+    dom.catPracticeActions.style.display = 'none';
+    dom.catComparison.style.display = 'none';
+    dom.recordReviewActions.style.display = '';
+    dom.feedbackCard.style.display = 'none';
+    dom.nextAction.style.display = 'none';
+    dom.canvasToolbar.style.display = 'none';
+    dom.btnBackDashboard.textContent = '← 返回列表';
+    dom.practiceProgress.textContent = `作答记录 #${record.id}`;
+
+    dom.qSubject.textContent = question.subject || '未知';
+    dom.qType.textContent = question.type || '未知';
+    dom.qPool.textContent = '记录';
+    dom.qPool.className = 'tag tag-pool review';
+
+    const answerImgUrl = q.answer_image_url;
+    if (answerImgUrl) {
+        dom.answerImagesArea.style.display = '';
+        dom.answerImagesContainer.innerHTML = `<img src="${answerImgUrl}" alt="答案图像">`;
+    } else {
+        dom.answerImagesArea.style.display = 'none';
+    }
+
+    updateRecordReviewButtons(record.is_correct);
+
+    // Show answer card automatically
+    dom.answerCard.style.display = '';
+    dom.answerContent.textContent = question.answer || '（无答案）';
+
+    // Render question + replay strokes (read-only canvas)
+    if (q.content_type === 'image' && q.image_url) {
+        dom.qImage.src = q.image_url;
+        dom.qImage.onload = () => {
+            renderQuestionToCanvas(question);
+            loadRecordStrokes(record.strokes);
+        };
+        if (dom.qImage.complete && dom.qImage.naturalWidth) {
+            dom.qImage.onload();
+        }
+    } else {
+        renderQuestionToCanvas(question);
+        loadRecordStrokes(record.strokes);
+    }
+}
+
+function loadRecordStrokes(strokes) {
+    state.strokes = (strokes && Array.isArray(strokes)) ? JSON.parse(JSON.stringify(strokes)) : [];
+    state.currentStroke = null;
+    redrawStrokes();
+}
+
+function updateRecordReviewButtons(isCorrect) {
+    if (!dom.btnMarkCorrect || !dom.btnMarkWrong) return;
+    dom.btnMarkCorrect.classList.toggle('active-annotation', isCorrect === true);
+    dom.btnMarkWrong.classList.toggle('active-annotation', isCorrect === false);
+    const statusEl = dom.recordReviewStatus;
+    if (!statusEl) return;
+    if (isCorrect === true) {
+        statusEl.textContent = '已标记: 正确';
+        statusEl.style.color = 'var(--success)';
+    } else if (isCorrect === false) {
+        statusEl.textContent = '已标记: 错误';
+        statusEl.style.color = 'var(--error)';
+    } else {
+        statusEl.textContent = '未标记';
+        statusEl.style.color = 'var(--text-muted)';
+    }
+}
+
 function backToDashboard() {
+    // Clear session review mode
+    if (state.sessionReviewMode) {
+        state.sessionReviewMode = false;
+        state.sessionReviewId = null;
+        state.sessionReviewRecords = [];
+        state.sessionReviewIdx = 0;
+        state._lastAnnotationValue = undefined;
+        dom.recordReviewActions.style.display = 'none';
+        dom.catNavActions.style.display = 'none';
+        dom.canvasToolbar.style.display = '';
+        dom.catSubmitBtn.textContent = '交卷';
+        dom.catSubmitBtn.style.background = '';
+        dom.catSubmitBtn.className = 'btn-sm btn-primary cat-submit-btn';
+        dom.catSubmitBtn.onclick = catBatchSubmit;
+        dom.catPrevBtn.onclick = catPrevQuestion;
+        dom.catNextBtn.onclick = catNextQuestion;
+        state.strokes = [];
+        state.currentStroke = null;
+    }
+
+    // Clear review mode
+    if (state.reviewMode) {
+        state.reviewMode = false;
+        state.reviewRecordId = null;
+        state.reviewRecordData = null;
+        dom.recordReviewActions.style.display = 'none';
+        dom.canvasToolbar.style.display = '';
+        state.strokes = [];
+        state.currentStroke = null;
+    }
+
+    // If in CAT mode, reset CAT state
+    if (state.catMode) {
+        catReset();
+    }
+
     dom.dashboardView.style.display = '';
     dom.practiceView.style.display = 'none';
     state.currentQuestion = null;

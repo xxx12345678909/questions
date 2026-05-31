@@ -362,9 +362,107 @@ def list_records():
             'time_spent': r['time_spent'],
             'is_correct': bool(r['is_correct']),
             'created_at': r['created_at'],
+            'strokes': r['strokes'],
         } for r in rows],
         'total': total,
     })
+
+
+# ----------------------------------------------------------------
+# Single record detail + annotation
+# ----------------------------------------------------------------
+
+@recommend_bp.route('/api/records/<int:record_id>', methods=['GET'])
+def get_record(record_id):
+    db = get_db()
+    row = db.execute('''
+        SELECT r.*, q.content, q.answer, q.content_type, q.image_path,
+               q.answer_image_path, q.subject, q.type
+        FROM answer_records r JOIN questions q ON r.question_id = q.id
+        WHERE r.id = ?
+    ''', (record_id,)).fetchone()
+    if not row:
+        return jsonify({'error': '记录不存在'}), 404
+
+    return jsonify({
+        'record': {
+            'id': row['id'],
+            'question_id': row['question_id'],
+            'time_spent': row['time_spent'],
+            'is_correct': bool(row['is_correct']),
+            'created_at': row['created_at'],
+            'strokes': json.loads(row['strokes'] or '[]'),
+            'question': {
+                'id': row['question_id'],
+                'content': row['content'] or '',
+                'answer': row['answer'] or '',
+                'content_type': row['content_type'] or 'text',
+                'image_url': f"/practice/uploads/{row['image_path']}" if row['image_path'] else '',
+                'answer_image_url': f"/practice/uploads/{row['answer_image_path']}" if row['answer_image_path'] else '',
+                'subject': row['subject'] or '',
+                'type': row['type'] or '',
+            },
+        }
+    })
+
+
+@recommend_bp.route('/api/records/<int:record_id>', methods=['PUT'])
+def update_record(record_id):
+    db = get_db()
+    data = request.get_json(force=True) or {}
+    is_correct = data.get('is_correct')
+    if is_correct is None:
+        return jsonify({'error': '缺少 is_correct'}), 400
+
+    row = db.execute(
+        'SELECT question_id FROM answer_records WHERE id = ?', (record_id,)
+    ).fetchone()
+    if not row:
+        return jsonify({'error': '记录不存在'}), 404
+
+    is_c = bool(is_correct)
+    db.execute('UPDATE answer_records SET is_correct = ? WHERE id = ?',
+               (1 if is_c else 0, record_id))
+
+    # Recompute user_question_state by replaying all records
+    qid = row['question_id']
+    records = db.execute(
+        'SELECT is_correct, time_spent FROM answer_records WHERE question_id = ? ORDER BY created_at',
+        (qid,)
+    ).fetchall()
+
+    question = db.execute('SELECT avg_cost FROM questions WHERE id = ?', (qid,)).fetchone()
+    cost = question['avg_cost'] if question else 5.0
+
+    lambda_ = 0.3
+    tc = 0
+    tw = 0
+    for r in records:
+        is_c2 = bool(r['is_correct'])
+        lambda_ = update_lambda_with_time_cost(lambda_, is_c2, r['time_spent'], cost)
+        tc += 1 if is_c2 else 0
+        tw += 0 if is_c2 else 1
+
+    accuracy = tc / (tc + tw) if (tc + tw) > 0 else 0.5
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat()
+
+    existing = db.execute(
+        'SELECT question_id FROM user_question_state WHERE question_id = ?', (qid,)
+    ).fetchone()
+    if existing:
+        db.execute('''
+            UPDATE user_question_state
+            SET lambda_=?, accuracy=?, times_correct=?, times_wrong=?, last_review=?
+            WHERE question_id=?
+        ''', (lambda_, accuracy, tc, tw, now, qid))
+    else:
+        db.execute('''
+            INSERT INTO user_question_state (question_id, lambda_, accuracy, times_correct, times_wrong, last_review)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (qid, lambda_, accuracy, tc, tw, now))
+
+    db.commit()
+    return jsonify({'message': '记录已更新', 'record_id': record_id, 'is_correct': is_c})
 
 
 # ----------------------------------------------------------------
