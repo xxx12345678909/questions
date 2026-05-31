@@ -67,11 +67,13 @@ def _sqlite_db_factory():
 
     Enables WAL journal mode so that concurrent reads (HTTP threads) and
     writes (this worker) can coexist without SQLITE_BUSY conflicts.
+    Uses extended timeout so busy writers queue up instead of failing fast.
     """
     import sqlite3
-    conn = sqlite3.connect(DATABASE)
+    conn = sqlite3.connect(DATABASE, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
 from practice.scheduler.worker import init_worker_thread  # noqa: E402

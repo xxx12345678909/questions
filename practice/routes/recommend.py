@@ -186,10 +186,13 @@ def submit_answer():
             )
             # 2. Offload heavy persistence recompute to background worker
             from practice.scheduler.worker import task_queue, GraphTaskType
-            task_queue.put({
-                "type": GraphTaskType.UPDATE_NODE_MASTERY,
-                "payload": {"node_id": nid, "question_id": question_id},
-            }, block=False)
+            try:
+                task_queue.put({
+                    "type": GraphTaskType.UPDATE_NODE_MASTERY,
+                    "payload": {"node_id": nid, "question_id": question_id},
+                }, block=False)
+            except Exception:
+                pass    # queue full — silently degrade
     except Exception:
         pass
 
@@ -584,10 +587,13 @@ def session_update():
                         f"practice:node:theta_window:{nid}", 1
                     )
                     from practice.scheduler.worker import task_queue, GraphTaskType
-                    task_queue.put({
-                        "type": GraphTaskType.UPDATE_NODE_MASTERY,
-                        "payload": {"node_id": nid, "question_id": question_id},
-                    }, block=False)
+                    try:
+                        task_queue.put({
+                            "type": GraphTaskType.UPDATE_NODE_MASTERY,
+                            "payload": {"node_id": nid, "question_id": question_id},
+                        }, block=False)
+                    except Exception:
+                        pass    # queue full — silently degrade
             except Exception:
                 pass
 
