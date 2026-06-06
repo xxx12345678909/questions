@@ -22,7 +22,7 @@ if __name__ == "__main__":
     try:
         from waitress import serve
         print(f"Waitress WSGI server starting on port {port} (threads=8) ...")
-        serve(app, host="0.0.0.0", port=port, threads=8)
+        serve(app, host="0.0.0.0", port=port, threads=4)
     except ImportError:
         print("waitress not installed — falling back to Flask dev server")
         app.run(host="0.0.0.0", port=port, debug=False)

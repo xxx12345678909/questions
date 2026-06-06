@@ -10,10 +10,19 @@ from practice import DATABASE, DEFAULT_CONFIG, practice_bp
 # ================================================================
 
 def get_db():
-    """Get a per-request SQLite connection stored on Flask's g."""
+    """Get a per-request SQLite connection stored on Flask's g.
+
+    Enables WAL journal mode so concurrent reads (HTTP threads) and writes
+    (worker thread) can coexist without SQLITE_BUSY.  Uses synchronous=NORMAL
+    to avoid fsync on every commit — safe with WAL journaling.
+    """
     if 'practice_db' not in g:
-        g.practice_db = sqlite3.connect(DATABASE)
+        g.practice_db = sqlite3.connect(DATABASE, timeout=30.0)
         g.practice_db.row_factory = sqlite3.Row
+        g.practice_db.execute("PRAGMA journal_mode=WAL;")
+        g.practice_db.execute("PRAGMA synchronous=NORMAL;")
+        g.practice_db.execute("PRAGMA cache_size=-8000;")  # 8 MB page cache
+        g.practice_db.execute("PRAGMA temp_store=MEMORY;")
     return g.practice_db
 
 
