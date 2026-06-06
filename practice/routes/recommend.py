@@ -122,8 +122,8 @@ def submit_answer():
     if not question_id:
         return jsonify({'error': '缺少 question_id'}), 400
 
-    # Data-penetration guard — reject requests for non-existent question IDs
-    q_row = db.execute('SELECT id FROM questions WHERE id = ?', (question_id,)).fetchone()
+    # --- Boundary check (read-only, fast) ---
+    q_row = db.execute('SELECT id, subject, avg_cost FROM questions WHERE id = ?', (question_id,)).fetchone()
     if not q_row:
         return jsonify({
             'status': 'error',
@@ -132,156 +132,85 @@ def submit_answer():
 
     is_correct = bool(data.get('is_correct', False))
     time_spent = max(0.0, float(data.get('time_spent', 0)))
-    strokes = json.dumps(data.get('strokes', []))
+    strokes_raw = data.get('strokes', [])
 
-    question = db.execute(
-        'SELECT * FROM questions WHERE id = ?', (question_id,)
-    ).fetchone()
-    if not question:
-        return jsonify({'error': '题目不存在'}), 404
-
-    state = db.execute(
-        'SELECT * FROM user_question_state WHERE question_id = ?', (question_id,)
+    # --- Read current state (fast, read-only) ---
+    state_row = db.execute(
+        'SELECT lambda_, times_correct, times_wrong, last_review FROM user_question_state WHERE question_id = ?',
+        (question_id,)
     ).fetchone()
 
-    lambda_old = state['lambda_'] if state else 0.3
-    old_cost = question['avg_cost']
+    old_cost = q_row['avg_cost']
+    lambda_old = state_row['lambda_'] if state_row else 0.3
+    tc_old = state_row['times_correct'] if state_row else 0
+    tw_old = state_row['times_wrong'] if state_row else 0
 
-    if state:
-        lambda_new = update_lambda_with_time_cost(state['lambda_'], is_correct, time_spent, old_cost)
-        acc_new, tc, tw = update_accuracy(
-            state['times_correct'], state['times_wrong'], is_correct
-        )
-        db.execute('''
-            UPDATE user_question_state
-            SET lambda_=?, last_review=?, accuracy=?, times_correct=?, times_wrong=?
-            WHERE question_id=?
-        ''', (lambda_new, datetime.now(UTC).replace(tzinfo=None).isoformat(), acc_new, tc, tw, question_id))
-    else:
-        lambda_new = update_lambda_with_time_cost(0.3, is_correct, time_spent, old_cost)
-        acc_new, tc, tw = update_accuracy(0, 0, is_correct)
-        db.execute('''
-            INSERT INTO user_question_state
-            (question_id, lambda_, last_review, accuracy, times_correct, times_wrong)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (question_id, lambda_new, datetime.now(UTC).replace(tzinfo=None).isoformat(), acc_new, tc, tw))
+    # --- Pure-math computation (no I/O) ---
+    lambda_new = update_lambda_with_time_cost(lambda_old, is_correct, time_spent, old_cost)
+    acc_new, tc_new, tw_new = update_accuracy(tc_old, tw_old, is_correct)
+    cost_new = update_cost(old_cost, time_spent) if time_spent > 0 else old_cost
+    now_iso = datetime.now(UTC).replace(tzinfo=None).isoformat()
 
-    if time_spent > 0:
-        cost_new = update_cost(old_cost, time_spent)
-        db.execute('UPDATE questions SET avg_cost = ? WHERE id = ?', (cost_new, question_id))
-    else:
-        cost_new = old_cost
-
-    db.execute('''
-        INSERT INTO answer_records (question_id, time_spent, is_correct, strokes, session_id, user_theta_snapshot, irt_theta_snapshot)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (question_id, time_spent, 1 if is_correct else 0, strokes, None, None, None))
-
-    db.commit()
-
-    # Update mastery — process queue (GIL-free) > thread queue > sync fallback
+    # --- Offload ALL DB writes to the worker thread (HTTP thread returns immediately) ---
     force_sync = request.args.get('sync', '').lower() in ('1', 'true', 'yes')
-    try:
-        node_rows = db.execute(
-            'SELECT node_id FROM question_node_mapping WHERE question_id = ?',
-            (question_id,)
-        ).fetchall()
-        for nr in node_rows:
-            nid = nr['node_id']
-            from practice.repository.cache_proxy import cache_service
-            cache_service.lpush_fixed_window(
-                f"practice:node:theta_window:{nid}", 1 if is_correct else 0
-            )
-            if force_sync:
-                from practice.repository.knowledge_repo import update_node_mastery
-                update_node_mastery(db, nid)
-            else:
-                # Prefer process-isolated queue (bypasses GIL, has debounce)
-                try:
-                    from practice.scheduler.process_worker import task_queue as pq, ProcessTaskType
-                    pq.put({
-                        "type": ProcessTaskType.RECALC_MASTERY,
-                        "payload": {"node_id": nid},
-                    }, block=False)
-                except Exception:
-                    # Fallback to thread-based queue
-                    try:
-                        from practice.scheduler.worker import task_queue as tq, GraphTaskType
-                        tq.put({
-                            "type": GraphTaskType.UPDATE_NODE_MASTERY,
-                            "payload": {"node_id": nid, "question_id": question_id},
-                        }, block=False)
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    node_ids = [
+        r['node_id'] for r in
+        db.execute('SELECT node_id FROM question_node_mapping WHERE question_id = ?', (question_id,)).fetchall()
+    ]
 
-    # v5: IRT 3PL parameter calibration — update theta/a/b per associated node
+    write_payload = {
+        "question_id": question_id,
+        "is_correct": is_correct,
+        "time_spent": time_spent,
+        "strokes": strokes_raw,
+        "lambda_new": lambda_new,
+        "acc_new": acc_new,
+        "tc_new": tc_new,
+        "tw_new": tw_new,
+        "cost_new": cost_new,
+        "now_iso": now_iso,
+        "node_ids": node_ids,
+        "has_state": state_row is not None,
+    }
+
+    if force_sync:
+        _execute_answer_writes(db, write_payload)
+    else:
+        from practice.scheduler.worker import task_queue, GraphTaskType
+        try:
+            task_queue.put({
+                "type": GraphTaskType.UPDATE_NODE_MASTERY,
+                "payload": {"write_payload": write_payload},
+            }, block=False)
+        except Exception:
+            _execute_answer_writes(db, write_payload)
+
+    # IRT calibration (read-only compute, fast)
     irt_result = None
-    try:
-        node_rows = db.execute(
-            'SELECT node_id FROM question_node_mapping WHERE question_id = ?',
-            (question_id,)
-        ).fetchall()
-        question_irt = db.execute(
-            'SELECT COALESCE(irt_a, 1.0) as a, COALESCE(irt_b, 0.0) as b, COALESCE(irt_c, 0.0) as c FROM questions WHERE id = ?',
-            (question_id,)
-        ).fetchone()
-        if question_irt and node_rows:
-            new_irt_a = question_irt['a']
-            new_irt_b = question_irt['b']
-            irt_c = question_irt['c'] if question_irt['c'] is not None else 0.0
-
-            # Use average theta across all associated nodes
-            avg_theta = 0.0
-            count = 0
-            for nr in node_rows:
-                node = db.execute(
-                    'SELECT COALESCE(irt_theta, 0.0) as theta FROM knowledge_nodes WHERE id = ?',
-                    (nr['node_id'],)
-                ).fetchone()
-                if node:
-                    avg_theta += node['theta']
-                    count += 1
-
-            if count > 0:
-                avg_theta /= count
-                new_theta, new_a, new_b = calibrate_irt_parameters(
-                    avg_theta, new_irt_a, new_irt_b, irt_c, is_correct
-                )
-
-                # Persist updated IRT parameters
-                for nr in node_rows:
-                    db.execute(
-                        'UPDATE knowledge_nodes SET irt_theta = ? WHERE id = ?',
-                        (new_theta, nr['node_id'])
+    if node_ids:
+        try:
+            question_irt = db.execute(
+                'SELECT COALESCE(irt_a,1.0) as a, COALESCE(irt_b,0.0) as b, COALESCE(irt_c,0.0) as c FROM questions WHERE id=?',
+                (question_id,)
+            ).fetchone()
+            if question_irt:
+                thetas = []
+                for nid in node_ids:
+                    nd = db.execute('SELECT COALESCE(irt_theta,0.0) as t FROM knowledge_nodes WHERE id=?', (nid,)).fetchone()
+                    if nd:
+                        thetas.append(nd['t'])
+                if thetas:
+                    avg_t = sum(thetas) / len(thetas)
+                    new_theta, new_a, new_b = calibrate_irt_parameters(
+                        avg_t, question_irt['a'], question_irt['b'],
+                        question_irt['c'] or 0.0, is_correct
                     )
-                db.execute(
-                    'UPDATE questions SET irt_a = ?, irt_b = ? WHERE id = ?',
-                    (new_a, new_b, question_id)
-                )
+                    irt_result = {'theta': new_theta, 'irt_a': new_a, 'irt_b': new_b}
+        except Exception:
+            pass
 
-                # Write irt_theta_snapshot to answer_records
-                db.execute(
-                    'UPDATE answer_records SET irt_theta_snapshot = ? WHERE id = (SELECT MAX(id) FROM answer_records WHERE question_id = ?)',
-                    (new_theta, question_id)
-                )
-                db.commit()
-
-                irt_result = {
-                    'theta': new_theta,
-                    'irt_a': new_a,
-                    'irt_b': new_b,
-                }
-    except Exception:
-        pass
-
-    now = datetime.now(UTC).replace(tzinfo=None)
-    ret_before = calc_retention(
-        lambda_old,
-        state['last_review'] if state else None,
-        now
-    )
+    # Retention before answer (read-only)
+    ret_before = calc_retention(lambda_old, state_row['last_review'] if state_row else None, datetime.now(UTC).replace(tzinfo=None))
 
     return jsonify({
         'message': '作答已记录',
@@ -294,6 +223,46 @@ def submit_answer():
         'retention_before': round(ret_before, 4),
         'irt_calibrated': irt_result,
     })
+
+
+def _execute_answer_writes(db, p):
+    """Execute all DB writes for an answer submission (called by worker thread or sync path)."""
+    import json as _json
+
+    qid = p["question_id"]
+    is_c = p["is_correct"]
+    strokes = _json.dumps(p.get("strokes", [])) if isinstance(p.get("strokes"), (list, dict)) else (p.get("strokes") or "[]")
+    nids = p.get("node_ids", [])
+
+    if p.get("has_state"):
+        db.execute(
+            'UPDATE user_question_state SET lambda_=?, last_review=?, accuracy=?, times_correct=?, times_wrong=? WHERE question_id=?',
+            (p["lambda_new"], p["now_iso"], p["acc_new"], p["tc_new"], p["tw_new"], qid))
+    else:
+        db.execute(
+            'INSERT INTO user_question_state (question_id,lambda_,last_review,accuracy,times_correct,times_wrong) VALUES (?,?,?,?,?,?)',
+            (qid, p["lambda_new"], p["now_iso"], p["acc_new"], p["tc_new"], p["tw_new"]))
+
+    if p.get("time_spent", 0) > 0:
+        db.execute('UPDATE questions SET avg_cost=? WHERE id=?', (p["cost_new"], qid))
+
+    db.execute(
+        'INSERT INTO answer_records (question_id,time_spent,is_correct,strokes,session_id,user_theta_snapshot,irt_theta_snapshot) VALUES (?,?,?,?,?,?,?)',
+        (qid, p["time_spent"], 1 if is_c else 0, strokes, None, None, None))
+
+    db.commit()
+
+    # Mastery recompute for associated nodes
+    for nid in nids:
+        from practice.repository.knowledge_repo import update_node_mastery
+        try:
+            update_node_mastery(db, nid)
+        except Exception:
+            pass
+    try:
+        db.commit()
+    except Exception:
+        pass
 
 
 # ----------------------------------------------------------------

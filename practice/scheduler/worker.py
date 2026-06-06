@@ -42,18 +42,34 @@ def background_worker_loop(db_factory_func):
             debounce_set = set()
 
             if first_task.get("type") == GraphTaskType.UPDATE_NODE_MASTERY:
-                debounce_set.add(first_task["payload"].get("node_id"))
+                p = first_task["payload"]
+                if "write_payload" in p:
+                    # Full answer write — execute immediately (no debounce for writes)
+                    from practice.routes.recommend import _execute_answer_writes
+                    _execute_answer_writes(db, p["write_payload"])
+                    # Also collect node_ids for mastery debounce
+                    for nid in p["write_payload"].get("node_ids", []):
+                        debounce_set.add(nid)
+                else:
+                    debounce_set.add(p.get("node_id"))
 
             # --- Non-blocking drain within the debounce window ---
             while time.time() - window_start < DEBOUNCE_SECONDS:
                 try:
                     next_task = task_queue.get(block=False)
                     if next_task.get("type") == GraphTaskType.UPDATE_NODE_MASTERY:
-                        debounce_set.add(next_task["payload"].get("node_id"))
+                        np = next_task["payload"]
+                        if "write_payload" in np:
+                            from practice.routes.recommend import _execute_answer_writes
+                            _execute_answer_writes(db, np["write_payload"])
+                            for nid in np["write_payload"].get("node_ids", []):
+                                debounce_set.add(nid)
+                        else:
+                            debounce_set.add(np.get("node_id"))
                 except queue.Empty:
                     time.sleep(0.05)
 
-            # --- Execute deduplicated work ---
+            # --- Execute deduplicated mastery recompute ---
             if debounce_set:
                 logger.info(
                     "Debounce window closed — %d unique node(s) to recompute.",
