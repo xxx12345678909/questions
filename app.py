@@ -1,8 +1,12 @@
 """Standalone intelligent review & practice system."""
+import os
 from flask import Flask
 from practice import practice_bp
 
-app = Flask(__name__)
+_project_root = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__,
+            static_folder=os.path.join(_project_root, 'static'),
+            template_folder=os.path.join(_project_root, 'templates'))
 app.register_blueprint(practice_bp, url_prefix='/practice')
 
 
@@ -14,4 +18,4 @@ def root():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=False)

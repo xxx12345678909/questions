@@ -16,7 +16,7 @@ MYSQL_CONFIG = {
     "host": os.environ.get("MYSQL_HOST", "127.0.0.1"),
     "port": int(os.environ.get("MYSQL_PORT", "3306")),
     "user": os.environ.get("MYSQL_USER", "root"),
-    "password": os.environ.get("MYSQL_PASSWORD", ""),
+    "password": os.environ.get("MYSQL_PASSWORD", "123456"),
     "database": os.environ.get("MYSQL_DATABASE", "practice"),
     "charset": "utf8mb4",
 }
@@ -104,10 +104,18 @@ class _RowDict:
 def _connect_sqlite():
     conn = sqlite3.connect(DATABASE, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # WAL mode: concurrent reads never block writes, writes never block reads
     conn.execute("PRAGMA journal_mode=WAL;")
+    # NORMAL sync: safe across power-loss, faster than FULL (journal fsync skipped)
     conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA cache_size=-8000;")
+    # 32 MB page cache (up from 8 MB) — fewer disk reads under concurrent load
+    conn.execute("PRAGMA cache_size=-32000;")
+    # In-memory temp storage for sorting/grouping — no temp file I/O
     conn.execute("PRAGMA temp_store=MEMORY;")
+    # 256 MB memory-mapped I/O — bypasses read() syscalls entirely
+    conn.execute("PRAGMA mmap_size=268435456;")
+    # Defer WAL checkpoint to 10K pages — smoother tail latency under write bursts
+    conn.execute("PRAGMA wal_autocheckpoint=10000;")
     return conn
 
 
@@ -147,73 +155,92 @@ def close_db(_exception):
 # Schema init & migrations — runs once at import time
 # ================================================================
 
+_SQLITE_DDL = '''
+    CREATE TABLE IF NOT EXISTS questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL,
+        answer TEXT NOT NULL, subject TEXT DEFAULT '', type TEXT DEFAULT '',
+        difficulty REAL DEFAULT 0.5, avg_cost REAL DEFAULT 5.0,
+        source TEXT DEFAULT 'manual', content_type TEXT DEFAULT 'text',
+        image_path TEXT DEFAULT '', answer_image_path TEXT DEFAULT '',
+        irt_a REAL DEFAULT 1.0, irt_b REAL DEFAULT 0.0, irt_c REAL DEFAULT 0.0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS user_question_state (
+        question_id INTEGER PRIMARY KEY, lambda_ REAL DEFAULT 0.3,
+        last_review TEXT NOT NULL DEFAULT '', accuracy REAL DEFAULT 0.0,
+        times_correct INTEGER DEFAULT 0, times_wrong INTEGER DEFAULT 0,
+        FOREIGN KEY (question_id) REFERENCES questions(id)
+    );
+    CREATE TABLE IF NOT EXISTS answer_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER NOT NULL,
+        time_spent REAL NOT NULL, is_correct INTEGER NOT NULL,
+        strokes TEXT DEFAULT '[]', session_id INTEGER,
+        user_theta_snapshot REAL, irt_theta_snapshot REAL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS knowledge_nodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+        subject TEXT NOT NULL, ideal_retention REAL DEFAULT 0.8,
+        current_mastery REAL DEFAULT 0.0, rolling_accuracy REAL DEFAULT 0.5,
+        irt_theta REAL DEFAULT 0.0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS knowledge_dependency (
+        node_id INTEGER NOT NULL, prerequisite_node_id INTEGER NOT NULL,
+        PRIMARY KEY (node_id, prerequisite_node_id),
+        FOREIGN KEY(node_id) REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+        FOREIGN KEY(prerequisite_node_id) REFERENCES knowledge_nodes(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS question_node_mapping (
+        question_id INTEGER NOT NULL, node_id INTEGER NOT NULL,
+        PRIMARY KEY (question_id, node_id),
+        FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE,
+        FOREIGN KEY(node_id) REFERENCES knowledge_nodes(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS user_study_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, session_start TEXT NOT NULL,
+        last_action TEXT NOT NULL, total_questions INTEGER DEFAULT 0,
+        accumulated_minutes REAL DEFAULT 0.0, current_fatigue REAL DEFAULT 0.0
+    );
+    CREATE TABLE IF NOT EXISTS cat_exam_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+        current_theta REAL DEFAULT 0.0, task_count INTEGER DEFAULT 0,
+        max_tasks INTEGER DEFAULT 20, is_completed INTEGER DEFAULT 0,
+        question_history TEXT DEFAULT '[]', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS cat_exam_details (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL,
+        question_id INTEGER NOT NULL, user_answer TEXT, is_correct INTEGER,
+        theta_before REAL, theta_after REAL, response_time_secs INTEGER,
+        FOREIGN KEY(session_id) REFERENCES cat_exam_sessions(id)
+    );
+'''
+
+
 def _init_sqlite_schema():
-    db = sqlite3.connect(DATABASE)
-    db.executescript('''
-        CREATE TABLE IF NOT EXISTS questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL,
-            answer TEXT NOT NULL, subject TEXT DEFAULT '', type TEXT DEFAULT '',
-            difficulty REAL DEFAULT 0.5, avg_cost REAL DEFAULT 5.0,
-            source TEXT DEFAULT 'manual', content_type TEXT DEFAULT 'text',
-            image_path TEXT DEFAULT '', answer_image_path TEXT DEFAULT '',
-            irt_a REAL DEFAULT 1.0, irt_b REAL DEFAULT 0.0, irt_c REAL DEFAULT 0.0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS user_question_state (
-            question_id INTEGER PRIMARY KEY, lambda_ REAL DEFAULT 0.3,
-            last_review TEXT NOT NULL DEFAULT '', accuracy REAL DEFAULT 0.0,
-            times_correct INTEGER DEFAULT 0, times_wrong INTEGER DEFAULT 0,
-            FOREIGN KEY (question_id) REFERENCES questions(id)
-        );
-        CREATE TABLE IF NOT EXISTS answer_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER NOT NULL,
-            time_spent REAL NOT NULL, is_correct INTEGER NOT NULL,
-            strokes TEXT DEFAULT '[]', session_id INTEGER,
-            user_theta_snapshot REAL, irt_theta_snapshot REAL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS knowledge_nodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
-            subject TEXT NOT NULL, ideal_retention REAL DEFAULT 0.8,
-            current_mastery REAL DEFAULT 0.0, rolling_accuracy REAL DEFAULT 0.5,
-            irt_theta REAL DEFAULT 0.0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS knowledge_dependency (
-            node_id INTEGER NOT NULL, prerequisite_node_id INTEGER NOT NULL,
-            PRIMARY KEY (node_id, prerequisite_node_id),
-            FOREIGN KEY(node_id) REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
-            FOREIGN KEY(prerequisite_node_id) REFERENCES knowledge_nodes(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS question_node_mapping (
-            question_id INTEGER NOT NULL, node_id INTEGER NOT NULL,
-            PRIMARY KEY (question_id, node_id),
-            FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE,
-            FOREIGN KEY(node_id) REFERENCES knowledge_nodes(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS user_study_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, session_start TEXT NOT NULL,
-            last_action TEXT NOT NULL, total_questions INTEGER DEFAULT 0,
-            accumulated_minutes REAL DEFAULT 0.0, current_fatigue REAL DEFAULT 0.0
-        );
-        CREATE TABLE IF NOT EXISTS cat_exam_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-            current_theta REAL DEFAULT 0.0, task_count INTEGER DEFAULT 0,
-            max_tasks INTEGER DEFAULT 20, is_completed INTEGER DEFAULT 0,
-            question_history TEXT DEFAULT '[]', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS cat_exam_details (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL,
-            question_id INTEGER NOT NULL, user_answer TEXT, is_correct INTEGER,
-            theta_before REAL, theta_after REAL, response_time_secs INTEGER,
-            FOREIGN KEY(session_id) REFERENCES cat_exam_sessions(id)
-        );
-    ''')
-    for k, v in DEFAULT_CONFIG.items():
-        db.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", (k, v))
-    db.commit()
-    db.close()
+    import time
+    for attempt in range(5):
+        try:
+            db = sqlite3.connect(DATABASE, timeout=3.0)
+            db.executescript(_SQLITE_DDL)
+
+            # Only seed config if the table is empty (avoids write lock on every startup)
+            existing = db.execute('SELECT COUNT(*) FROM config').fetchone()[0]
+            if existing == 0:
+                for k, v in DEFAULT_CONFIG.items():
+                    db.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", (k, v))
+                db.commit()
+            db.close()
+            return
+        except Exception:
+            try:
+                db.close()
+            except Exception:
+                pass
+            if attempt < 4:
+                time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError("SQLite schema init failed after 5 retries — database is locked")
 
 
 def _init_mysql_schema():

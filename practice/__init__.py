@@ -40,16 +40,8 @@ DEFAULT_CONFIG = {
     'enable_v5_process': 'true',
 }
 
-# Database initialization
-from practice.db import init_db, _migrate_image_columns, _migrate_knowledge_tables, _migrate_v3_schema, _migrate_v4_schema, _migrate_v5_irt_schema, _migrate_v6_cat_schema  # noqa: E402
-
-init_db()
-_migrate_image_columns()
-_migrate_knowledge_tables()
-_migrate_v3_schema()
-_migrate_v4_schema()
-_migrate_v5_irt_schema()
-_migrate_v6_cat_schema()
+# Database initialization — schema + migrations run automatically when practice.db is imported
+# (imported lazily by routes via from practice.db import get_db)
 
 # Register sub-blueprints on the main practice_bp
 from practice.routes.manage import manage_bp       # noqa: E402

@@ -404,7 +404,7 @@ def update_record(record_id):
         return jsonify({'error': '缺少 is_correct'}), 400
 
     row = db.execute(
-        'SELECT question_id FROM answer_records WHERE id = ?', (record_id,)
+        'SELECT question_id, session_id FROM answer_records WHERE id = ?', (record_id,)
     ).fetchone()
     if not row:
         return jsonify({'error': '记录不存在'}), 404
@@ -449,6 +449,16 @@ def update_record(record_id):
             INSERT INTO user_question_state (question_id, lambda_, accuracy, times_correct, times_wrong, last_review)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (qid, lambda_, accuracy, tc, tw, now))
+
+    # If this record belongs to a CAT session, replay theta chain after annotation
+    session_id = row['session_id']
+    if session_id:
+        cat_row = db.execute(
+            'SELECT id FROM cat_exam_sessions WHERE id = ?', (session_id,)
+        ).fetchone()
+        if cat_row:
+            from practice.services.cat_engine import recalc_cat_session_theta
+            recalc_cat_session_theta(db, session_id, record_id)
 
     db.commit()
     return jsonify({'message': '记录已更新', 'record_id': record_id, 'is_correct': is_c})
