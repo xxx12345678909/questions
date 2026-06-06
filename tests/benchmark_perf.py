@@ -118,6 +118,7 @@ def _print_report(label, global_duration):
 
     latencies.sort()
     avg = sum(latencies) / len(latencies)
+    p50 = latencies[len(latencies) // 2]
     p95 = latencies[min(int(len(latencies) * 0.95), len(latencies) - 1)]
     p99 = latencies[min(int(len(latencies) * 0.99), len(latencies) - 1)]
     qps = TOTAL_EXPECTED / global_duration if global_duration > 0 else 0
@@ -127,11 +128,11 @@ def _print_report(label, global_duration):
     print(f"  QPS         : {qps:.1f} req/s")
     print(f"  Success     : {success_count}  Errors: {error_count}")
     print(f"  SQLite 500s : {lock_error_count} ({lock_pct:.1f}%)")
-    print(f"  Min / Avg   : {latencies[0]:.1f} / {avg:.1f} ms")
+    print(f"  P50 / Avg   : {p50:.1f} / {avg:.1f} ms")
     print(f"  P95 / P99   : {p95:.1f} / {p99:.1f} ms")
-    print(f"  Max         : {latencies[-1]:.1f} ms")
-    return {"label": label, "qps": qps, "avg_ms": avg, "p95_ms": p95,
-            "p99_ms": p99, "lock_pct": lock_pct, "errors": error_count}
+    print(f"  Min / Max   : {latencies[0]:.1f} / {latencies[-1]:.1f} ms")
+    return {"label": label, "qps": qps, "avg_ms": avg, "p50_ms": p50,
+            "p95_ms": p95, "p99_ms": p99, "lock_pct": lock_pct, "errors": error_count}
 
 
 def run_benchmark(sync_mode, label):
@@ -178,6 +179,7 @@ def print_comparison(results):
         arrow = "↓" if (lower_is_better and b_val < a_val) or (not lower_is_better and b_val > a_val) else "↑"
         print(f"  {name:<20} {a_val:>8.1f}{unit:<10} {b_val:>8.1f}{unit:<10} {arrow} {abs(change):.0f}%")
 
+    _cmp_row("P50 Latency (ms)", a.get("p50_ms", 0), b.get("p50_ms", 0), "", True)
     _cmp_row("Avg Latency (ms)", a["avg_ms"], b["avg_ms"], "", True)
     _cmp_row("P95 Latency (ms)", a["p95_ms"], b["p95_ms"], "", True)
     _cmp_row("P99 Latency (ms)", a["p99_ms"], b["p99_ms"], "", True)
