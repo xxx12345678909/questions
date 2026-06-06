@@ -122,6 +122,14 @@ def submit_answer():
     if not question_id:
         return jsonify({'error': '缺少 question_id'}), 400
 
+    # Data-penetration guard — reject requests for non-existent question IDs
+    q_row = db.execute('SELECT id FROM questions WHERE id = ?', (question_id,)).fetchone()
+    if not q_row:
+        return jsonify({
+            'status': 'error',
+            'error': f'题库数据穿透：未找到 ID 为 {question_id} 的题目，请检查数据录入完整性。'
+        }), 404
+
     is_correct = bool(data.get('is_correct', False))
     time_spent = max(0.0, float(data.get('time_spent', 0)))
     strokes = json.dumps(data.get('strokes', []))
@@ -171,7 +179,8 @@ def submit_answer():
 
     db.commit()
 
-    # Update mastery for all associated knowledge nodes (async)
+    # Update mastery — process queue (GIL-free) > thread queue > sync fallback
+    force_sync = request.args.get('sync', '').lower() in ('1', 'true', 'yes')
     try:
         node_rows = db.execute(
             'SELECT node_id FROM question_node_mapping WHERE question_id = ?',
@@ -179,20 +188,31 @@ def submit_answer():
         ).fetchall()
         for nr in node_rows:
             nid = nr['node_id']
-            # 1. Fast in-memory sliding-window correctness update
             from practice.repository.cache_proxy import cache_service
             cache_service.lpush_fixed_window(
                 f"practice:node:theta_window:{nid}", 1 if is_correct else 0
             )
-            # 2. Offload heavy persistence recompute to background worker
-            from practice.scheduler.worker import task_queue, GraphTaskType
-            try:
-                task_queue.put({
-                    "type": GraphTaskType.UPDATE_NODE_MASTERY,
-                    "payload": {"node_id": nid, "question_id": question_id},
-                }, block=False)
-            except Exception:
-                pass    # queue full — silently degrade
+            if force_sync:
+                from practice.repository.knowledge_repo import update_node_mastery
+                update_node_mastery(db, nid)
+            else:
+                # Prefer process-isolated queue (bypasses GIL, has debounce)
+                try:
+                    from practice.scheduler.process_worker import task_queue as pq, ProcessTaskType
+                    pq.put({
+                        "type": ProcessTaskType.RECALC_MASTERY,
+                        "payload": {"node_id": nid},
+                    }, block=False)
+                except Exception:
+                    # Fallback to thread-based queue
+                    try:
+                        from practice.scheduler.worker import task_queue as tq, GraphTaskType
+                        tq.put({
+                            "type": GraphTaskType.UPDATE_NODE_MASTERY,
+                            "payload": {"node_id": nid, "question_id": question_id},
+                        }, block=False)
+                    except Exception:
+                        pass
     except Exception:
         pass
 
