@@ -67,12 +67,7 @@ practice_bp.register_blueprint(cat_bp)
 # ----------------------------------------------------------------
 
 def _sqlite_db_factory():
-    """Return a fresh, independent SQLite connection for the worker thread.
-
-    Enables WAL journal mode so that concurrent reads (HTTP threads) and
-    writes (this worker) can coexist without SQLITE_BUSY conflicts.
-    Uses extended timeout so busy writers queue up instead of failing fast.
-    """
+    """Return a fresh, independent SQLite connection for worker threads."""
     import sqlite3
     conn = sqlite3.connect(DATABASE, timeout=30.0)
     conn.row_factory = sqlite3.Row
@@ -80,25 +75,26 @@ def _sqlite_db_factory():
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
+
+def _worker_db_factory():
+    """Return a fresh DB connection for background workers (SQLite or MySQL)."""
+    from practice.db import DB_TYPE, _connect_mysql, _connect_sqlite
+    if DB_TYPE == "mysql":
+        return _connect_mysql()
+    return _connect_sqlite()
+
 # Thread-based worker (legacy fallback)
 from practice.scheduler.worker import init_worker_thread  # noqa: E402
 
 try:
-    init_worker_thread(_sqlite_db_factory)
+    init_worker_thread(_worker_db_factory)
 except Exception:
     import logging
     logging.getLogger("Practice").warning(
         "Background async-computation thread worker failed to mount"
     )
 
-# Process-isolated worker (primary — bypasses GIL, has debounce)
-def _sqlite_process_safe_factory():
-    import sqlite3
-    conn = sqlite3.connect(DATABASE, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    return conn
+# Process-isolated worker (Linux only — bypasses GIL, has debounce)
 
 # V5 process worker — only on Linux (Windows multiprocessing.Process requires __main__ guard)
 import os as _os
@@ -117,10 +113,9 @@ except Exception:
     pass
 
 if _v5_enabled in ('true', '1', 'yes', True) and _os.name == 'posix':
-    # Linux/macOS: multiprocessing.Process with fork — full GIL bypass
     from practice.scheduler.process_worker import init_isolated_process_cluster  # noqa: E402
     try:
-        _proc = init_isolated_process_cluster(_sqlite_process_safe_factory)
+        _proc = init_isolated_process_cluster(_worker_db_factory)
         if _proc:
             _logging.getLogger("Practice").info(
                 "V5 process-isolated worker mounted (pid=%d)", _proc.pid
