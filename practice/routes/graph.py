@@ -350,13 +350,31 @@ def graph_edge_update():
             return jsonify({'error': f'知识点 #{nid} 不存在'}), 404
 
     if action == 'add':
+        # --- Tarjan cycle detection: simulate the new edge and check for SCC ---
+        try:
+            edges_rows = db.execute(
+                'SELECT node_id, prerequisite_node_id FROM knowledge_dependency'
+            ).fetchall()
+            temp_adj_matrix = {}
+            for r in edges_rows:
+                temp_adj_matrix.setdefault(r['node_id'], []).append(r['prerequisite_node_id'])
+            temp_adj_matrix.setdefault(source_node_id, []).append(target_node_id)
+
+            from practice.graph.reducer import verify_graph_cycle_tarjan
+            if verify_graph_cycle_tarjan(len(temp_adj_matrix), temp_adj_matrix):
+                return jsonify({
+                    'error': '硬熔断警告：所选依赖关联会导致知识图谱产生双向循环依赖死锁！'
+                }), 400
+        except Exception as e:
+            return jsonify({'error': f'环路校验失败: {str(e)}'}), 400
+
         try:
             db.execute(
                 'INSERT INTO knowledge_dependency (node_id, prerequisite_node_id) VALUES (?, ?)',
                 (source_node_id, target_node_id)
             )
             db.commit()
-            return jsonify({'message': '依赖关系已添加', 'action': 'add'})
+            return jsonify({'message': '依赖关系已添加，拓扑结构通过收敛安全校验。', 'action': 'add'})
         except Exception as e:
             return jsonify({'error': f'添加失败: {str(e)}'}), 400
 

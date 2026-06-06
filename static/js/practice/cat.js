@@ -32,6 +32,16 @@ async function catStartSession() {
         state.catStrokesCache = {};
         state.catMaxTasks = data.max_tasks;
 
+        // Reset submit button for fresh session
+        if (dom.catSubmitBtn) {
+            dom.catSubmitBtn.disabled = false;
+            dom.catSubmitBtn.textContent = '交卷';
+            dom.catSubmitBtn.onclick = catBatchSubmit;
+            dom.catSubmitBtn.className = 'btn-sm btn-primary cat-submit-btn';
+        }
+        if (dom.catPrevBtn) dom.catPrevBtn.onclick = catPrevQuestion;
+        if (dom.catNextBtn) dom.catNextBtn.onclick = catNextQuestion;
+
         // Switch to practice view
         dom.dashboardView.style.display = 'none';
         dom.practiceView.style.display = '';
@@ -112,21 +122,20 @@ function catLoadQuestion(idx) {
     catUpdateNav();
 }
 
-/* ---- CAT: Save current strokes to per-question cache ---- */
+/* ---- CAT: Save current strokes to per-question cache (normalised) ---- */
 function catSaveStrokes() {
     const qid = state.currentQuestion ? state.currentQuestion.id : null;
     if (qid && state.strokes.length > 0) {
-        state.catStrokesCache[qid] = JSON.parse(JSON.stringify(state.strokes));
+        state.catStrokesCache[qid] = packStrokesForSubmit();
     }
 }
 
-/* ---- CAT: Restore cached strokes for current question ---- */
+/* ---- CAT: Restore cached strokes for current question (denormalised) ---- */
 function catRestoreStrokes() {
     const qid = state.currentQuestion ? state.currentQuestion.id : null;
     const cached = qid ? state.catStrokesCache[qid] : null;
-    if (cached && cached.length > 0) {
-        state.strokes = JSON.parse(JSON.stringify(cached));
-        redrawStrokes();
+    if (cached) {
+        unpackStrokesForCanvas(cached);
     }
 }
 
@@ -165,10 +174,10 @@ async function catBatchSubmit() {
     // Save current strokes
     catSaveStrokes();
 
-    // Build answers array from cache + any questions with no strokes (empty)
+    // Build answers array from cache (already normalised v2 format)
     const answers = [];
     for (const q of state.catQuestions) {
-        const strokes = state.catStrokesCache[q.id] || [];
+        const strokes = state.catStrokesCache[q.id] || { _v: 2, _qW: 800, _qH: 400, strokes: [] };
         answers.push({ question_id: q.id, strokes: strokes });
     }
 
@@ -203,14 +212,15 @@ async function catBatchSubmit() {
     }
 }
 
-/* ---- CAT: Render comparison results ---- */
+/* ---- CAT: Render comparison results (vertical: question+strokes top, answer bottom) ---- */
 function renderComparisonResults(results) {
     dom.catComparison.style.display = '';
     document.getElementById('catCompCount').textContent = `${results.length} 题`;
 
     let html = '';
     results.forEach((r, i) => {
-        const hasStrokes = r.strokes && r.strokes.length > 0;
+        const strokeData = r.strokes;
+        const hasStrokes = strokeData && ((isNormalisedStrokes(strokeData) && strokeData.strokes.length > 0) || (Array.isArray(strokeData) && strokeData.length > 0));
         const isImageQ = r.content_type === 'image';
         const hasAnswerImg = !!r.answer_image_url;
         const hasAnswerText = r.answer && r.answer.trim();
@@ -225,45 +235,31 @@ function renderComparisonResults(results) {
         }
         html += `</div>`;
 
-        html += `<div class="comp-content">`;
+        // ── Top section: Question + Strokes ──
+        html += `<div class="comp-top">`;
+        html += `<div class="comp-section-label">📝 题目 + 笔迹</div>`;
 
-        // Question + Strokes: use composite canvas for image Qs with strokes
-        if (isImageQ && r.image_url && hasStrokes) {
-            html += `<div class="comp-q-preview" style="flex:2;min-width:300px">`;
-            html += `<div class="comp-q-label">题目 + 作答笔迹</div>`;
+        if (isImageQ && r.image_url) {
+            // Image question: render composite canvas (question image + strokes overlay)
             const canvasId = `compCanvas${i}`;
             html += `<canvas id="${canvasId}" class="comp-composite-canvas"></canvas>`;
-            setTimeout(() => renderStrokesOnImage(canvasId, r.image_url, r.strokes), 0);
-            html += `</div>`;
+            setTimeout(() => renderStrokesOnImage(canvasId, r.image_url, strokeData), 0);
         } else {
-            // Question preview (no strokes overlay needed)
-            html += `<div class="comp-q-preview">`;
-            html += `<div class="comp-q-label">题目</div>`;
-            if (isImageQ && r.image_url) {
-                html += `<img src="${escapeHtml(r.image_url)}" class="comp-q-image" onerror="this.alt='加载失败'">`;
-            } else if (r.content) {
-                html += `<div class="comp-q-text">${escapeHtml(r.content)}</div>`;
-            } else {
-                html += `<div class="comp-q-text" style="color:#94a3b8">(无题目内容)</div>`;
-            }
-            html += `</div>`;
-
-            // Strokes preview (separate — text or no-image Qs)
-            html += `<div class="comp-strokes-preview">`;
-            html += `<div class="comp-strokes-label">作答笔迹</div>`;
+            // Text question: show content + strokes canvas below
+            html += `<div class="comp-q-text">${r.content ? escapeHtml(r.content) : '<span style="color:#94a3b8">(无题目内容)</span>'}</div>`;
             if (hasStrokes) {
-                const canvasId = `compMiniCanvas${i}`;
-                html += `<canvas id="${canvasId}" class="comp-mini-canvas"></canvas>`;
-                setTimeout(() => renderMiniStrokes(canvasId, r.strokes), 0);
+                const miniId = `compMiniCanvas${i}`;
+                html += `<canvas id="${miniId}" class="comp-mini-canvas"></canvas>`;
+                setTimeout(() => renderMiniStrokes(miniId, strokeData), 0);
             } else {
-                html += `<div style="color:#94a3b8;font-size:0.85rem;padding:20px 0">未作答</div>`;
+                html += `<div class="comp-no-strokes">未作答</div>`;
             }
-            html += `</div>`;
         }
+        html += `</div>`;
 
-        // Correct answer
-        html += `<div class="comp-answer-display">`;
-        html += `<div class="comp-answer-label">正确答案</div>`;
+        // ── Bottom section: Answer ──
+        html += `<div class="comp-bottom">`;
+        html += `<div class="comp-section-label">✅ 正确答案</div>`;
         if (hasAnswerImg) {
             html += `<img src="${escapeHtml(r.answer_image_url)}" class="comp-answer-image" onerror="this.alt='加载失败'">`;
         }
@@ -275,41 +271,24 @@ function renderComparisonResults(results) {
         }
         html += `</div>`;
 
-        html += `</div></div>`;
+        html += `</div>`;
     });
 
     document.getElementById('catCompList').innerHTML = html;
-
-    // Scroll comparison into view
     dom.catComparison.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-/* ---- CAT: Render strokes on a mini canvas for comparison ---- */
-function renderMiniStrokes(canvasId, strokes) {
+/* ---- CAT: Render strokes on a mini canvas for comparison (uses normalised coords) ---- */
+function renderMiniStrokes(canvasId, strokeData) {
     const canvas = document.getElementById(canvasId);
-    if (!canvas || !strokes || strokes.length === 0) return;
+    if (!canvas) return;
 
-    // Calculate bounding box of all stroke points
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const s of strokes) {
-        if (!s.points) continue;
-        for (const p of s.points) {
-            if (p.x < minX) minX = p.x;
-            if (p.y < minY) minY = p.y;
-            if (p.x > maxX) maxX = p.x;
-            if (p.y > maxY) maxY = p.y;
-        }
-    }
+    // Determine stroke count from normalised or legacy format
+    const strokeList = isNormalisedStrokes(strokeData) ? strokeData.strokes : (Array.isArray(strokeData) ? strokeData : []);
+    if (strokeList.length === 0) return;
 
-    if (!isFinite(minX)) return;
-
-    const padding = 16;
-    const displayW = Math.min(360, canvas.parentElement.offsetWidth - 32);
-    const displayH = 200;
-
-    const dataW = maxX - minX || 1;
-    const dataH = maxY - minY || 1;
-    const scale = Math.min((displayW - padding * 2) / dataW, (displayH - padding * 2) / dataH);
+    const displayW = Math.min(600, canvas.parentElement.offsetWidth - 32);
+    const displayH = 280;
 
     canvas.width = displayW;
     canvas.height = displayH;
@@ -320,38 +299,62 @@ function renderMiniStrokes(canvasId, strokes) {
     ctx.fillStyle = '#fefefe';
     ctx.fillRect(0, 0, displayW, displayH);
 
-    const offsetX = (displayW - dataW * scale) / 2 - minX * scale;
-    const offsetY = (displayH - dataH * scale) / 2 - minY * scale;
-
-    for (const s of strokes) {
-        if (!s.points || s.points.length < 2) continue;
-        ctx.save();
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.strokeStyle = s.color || '#1e293b';
-        ctx.lineWidth = Math.max(1, (s.width || 2) * scale);
-        ctx.beginPath();
-        const first = s.points[0];
-        ctx.moveTo(first.x * scale + offsetX, first.y * scale + offsetY);
-        for (let i = 1; i < s.points.length; i++) {
-            ctx.lineTo(s.points[i].x * scale + offsetX, s.points[i].y * scale + offsetY);
+    if (isNormalisedStrokes(strokeData)) {
+        // v2: use normalised coords scaled to display size
+        drawNormalisedStrokes(ctx, strokeData, displayW, displayH, 0, 0);
+    } else {
+        // Legacy: render raw coords with bounding-box fitting
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const s of strokeList) {
+            if (!s.points) continue;
+            for (const p of s.points) {
+                if (p.x < minX) minX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y > maxY) maxY = p.y;
+            }
         }
-        ctx.stroke();
-        ctx.restore();
+        if (!isFinite(minX)) return;
+
+        const padding = 16;
+        const dataW = maxX - minX || 1;
+        const dataH = maxY - minY || 1;
+        const scale = Math.min((displayW - padding * 2) / dataW, (displayH - padding * 2) / dataH);
+        const offsetX = (displayW - dataW * scale) / 2 - minX * scale;
+        const offsetY = (displayH - dataH * scale) / 2 - minY * scale;
+
+        for (const s of strokeList) {
+            if (!s.points || s.points.length < 2) continue;
+            ctx.save();
+            ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+            ctx.strokeStyle = s.color || '#1e293b';
+            ctx.lineWidth = Math.max(1, (s.width || 2) * scale);
+            ctx.beginPath();
+            ctx.moveTo(s.points[0].x * scale + offsetX, s.points[0].y * scale + offsetY);
+            for (let j = 1; j < s.points.length; j++) {
+                ctx.lineTo(s.points[j].x * scale + offsetX, s.points[j].y * scale + offsetY);
+            }
+            ctx.stroke();
+            ctx.restore();
+        }
     }
 }
 
 /* ---- Render strokes overlaid on question image for comparison ---- */
-function renderStrokesOnImage(canvasId, imageUrl, strokes) {
+function renderStrokesOnImage(canvasId, imageUrl, strokeData) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
 
-    const displayW = Math.min(360, canvas.parentElement.offsetWidth - 32);
+    const displayW = Math.min(600, canvas.parentElement.offsetWidth - 32);
     const img = new Image();
     img.onload = () => {
         const imgH = (img.naturalHeight / img.naturalWidth) * displayW;
-        const extraH = 200;
-        const totalH = imgH + extraH;
+
+        // Determine if we have strokes to show below
+        const strokeList = isNormalisedStrokes(strokeData) ? strokeData.strokes : (Array.isArray(strokeData) ? strokeData : []);
+        const hasStrokes = strokeList.length > 0;
+        const strokeAreaH = hasStrokes ? 240 : 0;
+        const totalH = Math.ceil(imgH) + strokeAreaH;
 
         canvas.width = displayW;
         canvas.height = totalH;
@@ -362,10 +365,12 @@ function renderStrokesOnImage(canvasId, imageUrl, strokes) {
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, displayW, totalH);
 
-        // Draw question image
+        // Draw question image scaled to display width
         ctx.drawImage(img, 0, 0, displayW, imgH);
 
-        // Dashed separator line
+        if (!hasStrokes) return;
+
+        // Separator line
         ctx.strokeStyle = '#e2e8f0';
         ctx.lineWidth = 1;
         ctx.setLineDash([8, 4]);
@@ -375,22 +380,66 @@ function renderStrokesOnImage(canvasId, imageUrl, strokes) {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Overlay strokes below the question image
-        if (!strokes || strokes.length === 0) return;
-        for (const s of strokes) {
-            if (!s.points || s.points.length < 2) continue;
-            ctx.save();
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            ctx.strokeStyle = s.color || '#1e293b';
-            ctx.lineWidth = s.width || 2;
-            ctx.beginPath();
-            ctx.moveTo(s.points[0].x, s.points[0].y);
-            for (let i = 1; i < s.points.length; i++) {
-                ctx.lineTo(s.points[i].x, s.points[i].y);
+        // Draw strokes below the image, scaled to displayW
+        const strokeTopY = Math.ceil(imgH) + 20;
+        if (isNormalisedStrokes(strokeData)) {
+            // v2: normalised strokes — use _qH (original question image height in px)
+            //     to determine which strokes belong in the image area vs drawing area
+            const refQH = strokeData._qH || Math.max(1, imgH);
+            const refQW = strokeData._qW || displayW;
+
+            strokeList.forEach(s => {
+                if (!s.points || s.points.length < 2) return;
+                ctx.save();
+                ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                ctx.strokeStyle = s.color || '#1e293b';
+                ctx.lineWidth = s.width || 2;
+
+                // Scale: normalised (0-1) * displayW/displayH for question area,
+                //        or placed in stroke area below
+                const pts = s.points.map(p => ({
+                    x: p.x * displayW,
+                    // Map y relative to original question height:
+                    // if y <= 1.0 → in question image zone
+                    // if y > 1.0  → in extra drawing zone (below separator)
+                    y: p.y <= 1.0 ? p.y * imgH : strokeTopY + (p.y - 1.0) * refQH * (strokeAreaH / (refQH || 400))
+                }));
+
+                ctx.beginPath();
+                ctx.moveTo(pts[0].x, pts[0].y);
+                for (let j = 1; j < pts.length; j++) {
+                    ctx.lineTo(pts[j].x, pts[j].y);
+                }
+                ctx.stroke();
+                ctx.restore();
+            });
+        } else {
+            // Legacy: raw coords, map to comparison canvas
+            let minY = Infinity, maxY = -Infinity;
+            for (const s of strokeList) {
+                if (!s.points) continue;
+                for (const p of s.points) {
+                    if (p.y < minY) minY = p.y;
+                    if (p.y > maxY) maxY = p.y;
+                }
             }
-            ctx.stroke();
-            ctx.restore();
+            const dataH = (maxY - minY) || 1;
+            const scale = Math.min(displayW / (state._questionWidth || displayW), strokeAreaH / dataH);
+
+            for (const s of strokeList) {
+                if (!s.points || s.points.length < 2) continue;
+                ctx.save();
+                ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                ctx.strokeStyle = s.color || '#1e293b';
+                ctx.lineWidth = Math.max(1, (s.width || 2) * scale);
+                ctx.beginPath();
+                ctx.moveTo(s.points[0].x * scale, strokeTopY + (s.points[0].y - minY) * scale);
+                for (let j = 1; j < s.points.length; j++) {
+                    ctx.lineTo(s.points[j].x * scale, strokeTopY + (s.points[j].y - minY) * scale);
+                }
+                ctx.stroke();
+                ctx.restore();
+            }
         }
     };
     img.src = imageUrl;
@@ -404,16 +453,28 @@ function catReset() {
     state.catCurrentIdx = 0;
     state.catStrokesCache = {};
     state.currentQuestion = null;
+    state.strokes = [];
+    state.currentStroke = null;
 
     dom.catNavActions.style.display = 'none';
     dom.catPracticeActions.style.display = '';
     dom.catComparison.style.display = 'none';
     dom.btnBackDashboard.textContent = '← 返回列表';
 
+    // Reset submit button so next exam starts clean
+    if (dom.catSubmitBtn) {
+        dom.catSubmitBtn.disabled = false;
+        dom.catSubmitBtn.textContent = '交卷';
+        dom.catSubmitBtn.onclick = catBatchSubmit;
+        dom.catSubmitBtn.className = 'btn-sm btn-primary cat-submit-btn';
+    }
+    if (dom.catPrevBtn) dom.catPrevBtn.onclick = catPrevQuestion;
+    if (dom.catNextBtn) dom.catNextBtn.onclick = catNextQuestion;
+
     document.getElementById('catBadge').textContent = '未开始';
 }
 
-/* ---- CAT: Bind CAT-specific events ---- */
+/* ---- CAT: Bind CAT-specific events (use onclick to avoid double-binding) ---- */
 function bindCatEvents() {
     const btnCatStart = document.getElementById('btnCatStart');
     const btnCatRestart = document.getElementById('btnCatRestart');
@@ -421,10 +482,10 @@ function bindCatEvents() {
     if (btnCatStart) btnCatStart.addEventListener('click', catStartSession);
     if (btnCatRestart) btnCatRestart.addEventListener('click', () => { catReset(); catStartSession(); });
 
-    // Nav buttons in practice view
-    if (dom.catPrevBtn) dom.catPrevBtn.addEventListener('click', catPrevQuestion);
-    if (dom.catNextBtn) dom.catNextBtn.addEventListener('click', catNextQuestion);
-    if (dom.catSubmitBtn) dom.catSubmitBtn.addEventListener('click', catBatchSubmit);
+    // Nav buttons in practice view — use onclick so session-review can safely override
+    if (dom.catPrevBtn) dom.catPrevBtn.onclick = catPrevQuestion;
+    if (dom.catNextBtn) dom.catNextBtn.onclick = catNextQuestion;
+    if (dom.catSubmitBtn) dom.catSubmitBtn.onclick = catBatchSubmit;
 }
 
 /* Bind CAT events on DOM ready */

@@ -279,19 +279,262 @@ def delete_question(question_id):
 
 
 # ----------------------------------------------------------------
+# Bank tree — hierarchical subject → knowledge-node directory
+# ----------------------------------------------------------------
+
+@manage_bp.route('/api/bank/tree', methods=['GET'])
+def bank_tree():
+    """Return a two-level tree: subject → knowledge_nodes with question counts."""
+    db = get_db()
+
+    # All subjects that have questions
+    subject_rows = db.execute('''
+        SELECT subject, COUNT(*) as total
+        FROM questions
+        WHERE subject != '' AND subject IS NOT NULL
+        GROUP BY subject
+        ORDER BY subject
+    ''').fetchall()
+
+    # Knowledge nodes with per-subject question counts
+    node_rows = db.execute('''
+        SELECT n.id, n.name, n.subject, COUNT(m.question_id) as cnt
+        FROM knowledge_nodes n
+        LEFT JOIN question_node_mapping m ON n.id = m.node_id
+        GROUP BY n.id
+        ORDER BY n.subject, n.name
+    ''').fetchall()
+
+    # Index nodes by subject
+    nodes_by_subject = {}
+    for r in node_rows:
+        subj = r['subject']
+        if subj not in nodes_by_subject:
+            nodes_by_subject[subj] = []
+        nodes_by_subject[subj].append({
+            'id': r['id'],
+            'name': r['name'],
+            'count': r['cnt'],
+        })
+
+    # Unlinked questions (no knowledge node) per subject — with and without subject
+    unlinked_by_subject = {}
+    unlinked_rows = db.execute('''
+        SELECT q.subject, COUNT(*) as cnt
+        FROM questions q
+        WHERE q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)
+          AND q.subject != '' AND q.subject IS NOT NULL
+        GROUP BY q.subject
+    ''').fetchall()
+    for r in unlinked_rows:
+        unlinked_by_subject[r['subject']] = r['cnt']
+
+    # Questions with no subject at all
+    no_subject_total = db.execute(
+        "SELECT COUNT(*) FROM questions WHERE subject = '' OR subject IS NULL"
+    ).fetchone()[0]
+
+    # Among no-subject questions, how many also have no knowledge nodes
+    no_subject_unlinked = db.execute('''
+        SELECT COUNT(*) FROM questions q
+        WHERE (q.subject = '' OR q.subject IS NULL)
+          AND q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)
+    ''').fetchone()[0]
+
+    # Total uncategorized = no subject OR no knowledge node
+    total_uncategorized = db.execute('''
+        SELECT COUNT(DISTINCT q.id) FROM questions q
+        WHERE (q.subject = '' OR q.subject IS NULL)
+           OR q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)
+    ''').fetchone()[0]
+
+    # Knowledge nodes for no-subject questions (odd but possible if nodes exist without subject)
+    no_subject_nodes = []
+    if no_subject_total > 0:
+        ns_nodes = db.execute('''
+            SELECT n.id, n.name, n.subject, COUNT(m.question_id) as cnt
+            FROM knowledge_nodes n
+            JOIN question_node_mapping m ON n.id = m.node_id
+            JOIN questions q ON m.question_id = q.id
+            WHERE q.subject = '' OR q.subject IS NULL
+            GROUP BY n.id
+            ORDER BY n.name
+        ''').fetchall()
+        no_subject_nodes = [{
+            'id': r['id'], 'name': r['name'], 'count': r['cnt']
+        } for r in ns_nodes]
+
+    subjects = []
+    for sr in subject_rows:
+        s = {
+            'name': sr['subject'],
+            'total': sr['total'],
+            'nodes': nodes_by_subject.get(sr['subject'], []),
+            'unlinked': unlinked_by_subject.get(sr['subject'], 0),
+        }
+        subjects.append(s)
+
+    return jsonify({
+        'subjects': subjects,
+        'no_subject': {
+            'total': no_subject_total,
+            'unlinked': no_subject_unlinked,
+            'nodes': no_subject_nodes,
+        },
+        'total_uncategorized': total_uncategorized,
+    })
+
+
+def _annotate_question_categorization(db, row):
+    """Add categorization status fields to a question dict."""
+    qid = row['id']
+    # Count associated knowledge nodes
+    node_count = db.execute(
+        'SELECT COUNT(*) FROM question_node_mapping WHERE question_id = ?', (qid,)
+    ).fetchone()[0]
+    has_subject = bool(row['subject'] and row['subject'].strip())
+    has_nodes = node_count > 0
+    return {
+        'has_subject': has_subject,
+        'has_nodes': has_nodes,
+        'node_count': node_count,
+        'subject': row['subject'] or '',
+    }
+
+
+@manage_bp.route('/api/bank/node/<int:node_id>/questions', methods=['GET'])
+def bank_node_questions(node_id):
+    """List questions belonging to a specific knowledge node (with pagination)."""
+    db = get_db()
+    limit = request.args.get('limit', type=int, default=50)
+    offset = request.args.get('offset', type=int, default=0)
+
+    total = db.execute('''
+        SELECT COUNT(*)
+        FROM question_node_mapping m
+        JOIN questions q ON m.question_id = q.id
+        WHERE m.node_id = ?
+    ''', (node_id,)).fetchone()[0]
+
+    rows = db.execute('''
+        SELECT q.*, COALESCE(s.times_correct, 0) as times_correct,
+               COALESCE(s.times_wrong, 0) as times_wrong,
+               COALESCE(s.accuracy, 0) as accuracy,
+               s.last_review
+        FROM question_node_mapping m
+        JOIN questions q ON m.question_id = q.id
+        LEFT JOIN user_question_state s ON q.id = s.question_id
+        WHERE m.node_id = ?
+        ORDER BY q.id DESC
+        LIMIT ? OFFSET ?
+    ''', (node_id, limit, offset)).fetchall()
+
+    questions = []
+    for row in rows:
+        q = _row_to_question(row)
+        q.update({
+            'has_state': row['last_review'] is not None,
+            'times_correct': row['times_correct'],
+            'times_wrong': row['times_wrong'],
+            'accuracy': row['accuracy'],
+        })
+        q.update(_annotate_question_categorization(db, row))
+        questions.append(q)
+
+    node = db.execute(
+        'SELECT id, name, subject FROM knowledge_nodes WHERE id = ?', (node_id,)
+    ).fetchone()
+
+    return jsonify({
+        'node': {'id': node['id'], 'name': node['name'], 'subject': node['subject']} if node else None,
+        'questions': questions,
+        'total': total,
+    })
+
+
+@manage_bp.route('/api/bank/subject/<subject>/questions', methods=['GET'])
+def bank_subject_questions(subject):
+    """List questions for a subject, optionally filtered by unlinked-only."""
+    db = get_db()
+    limit = request.args.get('limit', type=int, default=50)
+    offset = request.args.get('offset', type=int, default=0)
+    unlinked_only = request.args.get('unlinked', '').lower() == 'true'
+
+    # Handle "未分类" (no-subject) as a special subject
+    if subject == '__no_subject__':
+        where = "(q.subject = '' OR q.subject IS NULL)"
+        params = []
+    elif unlinked_only:
+        where = "q.subject = ? AND q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)"
+        params = [subject]
+    else:
+        where = "q.subject = ?"
+        params = [subject]
+
+    total = db.execute(
+        f'SELECT COUNT(*) FROM questions q WHERE {where}', params
+    ).fetchone()[0]
+
+    rows = db.execute(f'''
+        SELECT q.*, COALESCE(s.times_correct, 0) as times_correct,
+               COALESCE(s.times_wrong, 0) as times_wrong,
+               COALESCE(s.accuracy, 0) as accuracy,
+               s.last_review
+        FROM questions q
+        LEFT JOIN user_question_state s ON q.id = s.question_id
+        WHERE {where}
+        ORDER BY q.id DESC
+        LIMIT ? OFFSET ?
+    ''', params + [limit, offset]).fetchall()
+
+    questions = []
+    for row in rows:
+        q = _row_to_question(row)
+        q.update({
+            'has_state': row['last_review'] is not None,
+            'times_correct': row['times_correct'],
+            'times_wrong': row['times_wrong'],
+            'accuracy': row['accuracy'],
+        })
+        q.update(_annotate_question_categorization(db, row))
+        questions.append(q)
+
+    return jsonify({
+        'subject': subject,
+        'unlinked_only': unlinked_only,
+        'questions': questions,
+        'total': total,
+    })
+
+
+# ----------------------------------------------------------------
 # Unattributed questions pool
 # ----------------------------------------------------------------
 
 @manage_bp.route('/api/questions/unattributed', methods=['GET'])
 def list_unattributed_questions():
-    """列出未关联任何知识节点的题目（未归属池）"""
+    """列出未归属题目：缺知识点 或 缺科目（两者任一即入池）+ 归类判定"""
     db = get_db()
     subject = request.args.get('subject', '').strip()
     qtype = request.args.get('type', '').strip()
     search = request.args.get('search', '').strip()
+    filter_mode = request.args.get('filter', 'all')  # all | no_subject | no_nodes | both_missing
 
-    where = ["q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)"]
+    # 入池条件：缺知识点 或 缺科目
+    base_where = """(
+        q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)
+        OR (q.subject = '' OR q.subject IS NULL)
+    )"""
+    where = [base_where]
     params = []
+
+    if filter_mode == 'no_subject':
+        where.append("(q.subject = '' OR q.subject IS NULL)")
+    elif filter_mode == 'no_nodes':
+        where.append("q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)")
+    elif filter_mode == 'both_missing':
+        where.append("(q.subject = '' OR q.subject IS NULL)")
+        where.append("q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)")
 
     if subject:
         where.append("q.subject = ?")
@@ -308,10 +551,23 @@ def list_unattributed_questions():
         f'SELECT q.* FROM questions q WHERE {clause} ORDER BY q.created_at DESC', params
     ).fetchall()
 
+    # Pre-fetch node counts for all returned question IDs
+    qids = [r['id'] for r in rows]
+    node_counts = {}
+    if qids:
+        placeholders = ','.join('?' * len(qids))
+        nc_rows = db.execute(
+            f'SELECT question_id, COUNT(*) as cnt FROM question_node_mapping WHERE question_id IN ({placeholders}) GROUP BY question_id',
+            qids
+        ).fetchall()
+        node_counts = {r['question_id']: r['cnt'] for r in nc_rows}
+
     questions = []
     for row in rows:
+        qid = row['id']
+        nc = node_counts.get(qid, 0)
         q = {
-            'id': row['id'],
+            'id': qid,
             'content': row['content'],
             'answer': row['answer'],
             'subject': row['subject'] or '',
@@ -321,6 +577,9 @@ def list_unattributed_questions():
             'source': row['source'] or '',
             'created_at': row['created_at'],
             'content_type': row['content_type'],
+            'has_subject': bool(row['subject'] and row['subject'].strip()),
+            'has_nodes': nc > 0,
+            'node_count': nc,
         }
         if q['content_type'] == 'image' and row['image_path']:
             q['image_url'] = f'/practice/uploads/{row["image_path"]}'
@@ -332,6 +591,42 @@ def list_unattributed_questions():
             q['answer_image_url'] = None
         questions.append(q)
 
+    # Summary counts (pool = no_nodes OR no_subject)
+    base_pool = """(
+        q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)
+        OR (q.subject = '' OR q.subject IS NULL)
+    )"""
+    total_in_pool = db.execute(f'SELECT COUNT(*) FROM questions q WHERE {base_pool}').fetchone()[0]
+    total_no_nodes = db.execute(f'''
+        SELECT COUNT(*) FROM questions q
+        WHERE q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)
+    ''').fetchone()[0]
+    total_no_subject = db.execute(f'''
+        SELECT COUNT(*) FROM questions q
+        WHERE (q.subject = '' OR q.subject IS NULL)
+    ''').fetchone()[0]
+    both_missing_count = db.execute(f'''
+        SELECT COUNT(*) FROM questions q
+        WHERE q.id NOT IN (SELECT DISTINCT question_id FROM question_node_mapping)
+          AND (q.subject = '' OR q.subject IS NULL)
+    ''').fetchone()[0]
+
+    if filter_mode == 'all':
+        no_subject_count = total_no_subject
+        no_nodes_count = total_no_nodes
+    elif filter_mode == 'no_subject':
+        no_subject_count = len(questions)
+        no_nodes_count = len([q for q in questions if not q['has_nodes']])
+    elif filter_mode == 'no_nodes':
+        no_subject_count = len([q for q in questions if not q['has_subject']])
+        no_nodes_count = len(questions)
+    elif filter_mode == 'both_missing':
+        no_subject_count = len(questions)
+        no_nodes_count = len(questions)
+    else:
+        no_subject_count = len([q for q in questions if not q['has_subject']])
+        no_nodes_count = len([q for q in questions if not q['has_nodes']])
+
     nodes = db.execute('SELECT id, name, subject FROM knowledge_nodes ORDER BY subject, name').fetchall()
     knowledge_nodes = [{'id': n['id'], 'name': n['name'], 'subject': n['subject']} for n in nodes]
 
@@ -339,6 +634,13 @@ def list_unattributed_questions():
         'questions': questions,
         'knowledge_nodes': knowledge_nodes,
         'total': len(questions),
+        'summary': {
+            'total_in_pool': total_in_pool,
+            'no_subject': no_subject_count,
+            'no_nodes': no_nodes_count,
+            'both_missing': both_missing_count,
+            'filter_mode': filter_mode,
+        },
     })
 
 

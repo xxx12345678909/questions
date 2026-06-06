@@ -53,6 +53,9 @@ const state = {
     reviewRecordId: null,
     reviewRecordData: null,
 
+    // Bank edit mode (single-view over bank directory)
+    bankEditMode: false,
+
     // Session review mode
     sessionReviewMode: false,
     sessionReviewId: null,
@@ -77,6 +80,7 @@ function cacheDom() {
         'tabRecommend', 'tabBank', 'tabUpload', 'tabGraph', 'tabCat', 'tabUnattributed',
         'recommendCount', 'recommendBreakdown', 'recommendList',
         'bankSearch', 'bankList', 'bankPagination', 'btnAddQuestion',
+        'bankTreePanel', 'bankTree', 'btnRefreshTree', 'bankListTitle', 'bankBreadcrumb',
         'pdfDropArea', 'pdfInput', 'btnUploadPdf', 'pdfViewer',
         'btnPdfClose', 'pdfPageInfo', 'pdfInfo',
         'pdfCanvasWrapper', 'pdfCanvas', 'cropOverlay',
@@ -106,7 +110,7 @@ function cacheDom() {
         'toast', 'btnResetQuestions',
         // Unattributed
         'unattributedCount', 'unattributedSearch', 'unattributedList', 'unattributedPagination',
-        'btnSingleView', 'singleViewCard', 'unattributedListCard', 'singleViewTitle', 'singleViewContent',
+        'btnSingleView', 'singleViewModal', 'unattributedListCard', 'singleViewTitle', 'singleViewContent',
         'singleProgress', 'btnSinglePrev', 'btnSingleNext', 'btnSingleSave',
         // CAT
         'catPrevBtn', 'catNextBtn', 'catSubmitBtn', 'catComparison',

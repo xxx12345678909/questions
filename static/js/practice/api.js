@@ -229,7 +229,7 @@ async function submitAnswer(isCorrect) {
                 question_id: state.currentQuestion.id,
                 is_correct: isCorrect,
                 time_spent: Math.round(timeSpent * 10) / 10,
-                strokes: state.strokes,
+                strokes: packStrokesForSubmit(),
             }),
         });
         const data = await res.json();
@@ -280,66 +280,245 @@ async function submitAnswer(isCorrect) {
     }
 }
 
-/* ---- Question bank ---- */
-async function loadBank(page = 0) {
-    state.bankPage = page;
-    const params = new URLSearchParams();
-    const search = dom.bankSearch.value.trim();
-    const subject = dom.filterSubject.value;
-    const qtype = dom.filterType.value;
+/* ---- Question bank — tree + list ---- */
 
-    if (search) params.set('search', search);
-    if (subject) params.set('subject', subject);
-    if (qtype) params.set('type', qtype);
-    params.set('limit', String(state.bankPageSize));
-    params.set('offset', String(page * state.bankPageSize));
+// Track current bank view context
+state.bankCtx = { type: null, id: null, label: '', page: 0 };
+
+async function loadBankTree() {
+    try {
+        const res = await fetch('/practice/api/bank/tree');
+        const data = await res.json();
+        const subjects = data.subjects || [];
+        const noSubj = data.no_subject || {};
+        const totalUncategorized = data.total_uncategorized || 0;
+
+        if (subjects.length === 0 && noSubj.total === 0) {
+            dom.bankTree.innerHTML = '<div class="empty-hint">暂无题目</div>';
+            return;
+        }
+
+        let html = '';
+
+        // ── ⚠️ 未归类 section (always at top) ──
+        if (totalUncategorized > 0) {
+            html += `<div class="bank-folder bank-folder-uncategorized">`;
+            html += `<div class="bank-folder-header" onclick="toggleBankFolder('bank-uncategorized')" style="background:#fffbeb">`;
+            html += `<span class="bank-folder-arrow" id="bank-uncategorized-arrow">▶</span>`;
+            html += `<span class="bank-folder-icon">⚠️</span>`;
+            html += `<span class="bank-folder-name" style="color:#92400e">未归类</span>`;
+            html += `<span class="bank-folder-count" style="background:#fef3c7;color:#92400e">${totalUncategorized}</span>`;
+            html += `</div>`;
+            html += `<div class="bank-folder-children" id="bank-uncategorized" style="display:none">`;
+
+            // No-subject questions
+            if (noSubj.total > 0) {
+                html += `<div class="bank-leaf bank-leaf-warning" data-type="subject" data-id="__no_subject__" data-label="未分类（无科目）">`;
+                html += `<span class="bank-leaf-icon">🚫</span>`;
+                html += `<span class="bank-leaf-name">无科目</span>`;
+                html += `<span class="bank-leaf-count">${noSubj.total}</span>`;
+                html += `</div>`;
+            }
+
+            // Questions with subject but no nodes — grouped by subject
+            subjects.forEach(s => {
+                if (s.unlinked > 0) {
+                    html += `<div class="bank-leaf bank-leaf-warning" data-type="subject-unlinked" data-id="${escapeHtml(s.name)}" data-label="${escapeHtml(s.name)} · 缺知识点">`;
+                    html += `<span class="bank-leaf-icon">📎</span>`;
+                    html += `<span class="bank-leaf-name">${escapeHtml(s.name)} · 缺知识点</span>`;
+                    html += `<span class="bank-leaf-count">${s.unlinked}</span>`;
+                    html += `</div>`;
+                }
+            });
+
+            html += `</div></div>`;
+        }
+
+        // ── Regular subject folders ──
+        subjects.forEach(s => {
+            const nodeItems = s.nodes || [];
+            const hasUnlinked = s.unlinked > 0;
+            const folderId = 'bank-folder-' + s.name.replace(/[^a-zA-Z0-9一-鿿]/g, '_');
+
+            html += `<div class="bank-folder">`;
+            html += `<div class="bank-folder-header" onclick="toggleBankFolder('${folderId}')">`;
+            html += `<span class="bank-folder-arrow" id="${folderId}-arrow">▶</span>`;
+            html += `<span class="bank-folder-icon">📁</span>`;
+            html += `<span class="bank-folder-name">${escapeHtml(s.name)}</span>`;
+            html += `<span class="bank-folder-count">${s.total}</span>`;
+            if (hasUnlinked) {
+                html += `<span class="bank-folder-warn" title="有${s.unlinked}题未关联知识点">⚠️</span>`;
+            }
+            html += `</div>`;
+            html += `<div class="bank-folder-children" id="${folderId}" style="display:none">`;
+
+            // Subject-level "all questions" entry
+            html += `<div class="bank-leaf" data-type="subject" data-id="${escapeHtml(s.name)}" data-label="${escapeHtml(s.name)}">`;
+            html += `<span class="bank-leaf-icon">📋</span>`;
+            html += `<span class="bank-leaf-name">全部题目</span>`;
+            html += `<span class="bank-leaf-count">${s.total}</span>`;
+            html += `</div>`;
+
+            nodeItems.forEach(n => {
+                html += `<div class="bank-leaf" data-type="node" data-id="${n.id}" data-label="${escapeHtml(n.name)}">`;
+                html += `<span class="bank-leaf-icon">📄</span>`;
+                html += `<span class="bank-leaf-name">${escapeHtml(n.name)}</span>`;
+                html += `<span class="bank-leaf-count">${n.count}</span>`;
+                html += `</div>`;
+            });
+
+            if (hasUnlinked) {
+                html += `<div class="bank-leaf bank-leaf-unlinked" data-type="subject-unlinked" data-id="${escapeHtml(s.name)}" data-label="${escapeHtml(s.name)} · 未归属">`;
+                html += `<span class="bank-leaf-icon">📎</span>`;
+                html += `<span class="bank-leaf-name">未归属知识点</span>`;
+                html += `<span class="bank-leaf-count">${s.unlinked}</span>`;
+                html += `</div>`;
+            }
+
+            html += `</div></div>`;
+        });
+
+        dom.bankTree.innerHTML = html;
+
+        // Bind leaf clicks
+        dom.bankTree.querySelectorAll('.bank-leaf').forEach(el => {
+            el.addEventListener('click', () => {
+                const type = el.dataset.type;
+                const id = el.dataset.id;
+                const label = el.dataset.label;
+                state.bankCtx = { type, id: type === 'node' ? parseInt(id) : id, label, page: 0 };
+                loadBankQuestions();
+                dom.bankTree.querySelectorAll('.bank-leaf.active').forEach(l => l.classList.remove('active'));
+                el.classList.add('active');
+            });
+        });
+    } catch (e) {
+        dom.bankTree.innerHTML = `<div class="empty-hint">加载失败: ${e.message}</div>`;
+    }
+}
+
+function toggleBankFolder(folderId) {
+    const children = document.getElementById(folderId);
+    const arrow = document.getElementById(folderId + '-arrow');
+    if (!children || !arrow) return;
+    const isOpen = children.style.display !== 'none';
+    children.style.display = isOpen ? 'none' : '';
+    arrow.textContent = isOpen ? '▶' : '▼';
+}
+
+async function loadBankQuestions(page = null) {
+    if (page !== null) state.bankCtx.page = page;
+    const ctx = state.bankCtx;
+    const p = state.bankCtx.page;
+    if (!ctx.type) return;
+
+    let url;
+    const ps = state.bankPageSize;
+    if (ctx.type === 'node') {
+        url = `/practice/api/bank/node/${ctx.id}/questions?limit=${ps}&offset=${p * ps}`;
+    } else if (ctx.type === 'subject') {
+        url = `/practice/api/bank/subject/${encodeURIComponent(ctx.id)}/questions?limit=${ps}&offset=${p * ps}`;
+    } else if (ctx.type === 'subject-unlinked') {
+        url = `/practice/api/bank/subject/${encodeURIComponent(ctx.id)}/questions?unlinked=true&limit=${ps}&offset=${p * ps}`;
+    } else {
+        return;
+    }
 
     try {
-        const res = await fetch(`/practice/api/questions?${params}`);
+        const res = await fetch(url);
         const data = await res.json();
-        state.questions = data.questions;
         state.bankTotal = data.total;
+        dom.bankListTitle.textContent = `📚 ${ctx.label}`;
+        dom.bankBreadcrumb.style.display = '';
+        dom.bankBreadcrumb.innerHTML = `<span class="breadcrumb-link" onclick="resetBankView()">题库</span> › ${escapeHtml(ctx.label)} <span class="bank-breadcrumb-count">(${data.total}题)</span>`;
 
         if (data.questions.length === 0) {
-            dom.bankList.innerHTML = '<div class="empty-hint">暂无题目，点击「新建题目」添加</div>';
+            dom.bankList.innerHTML = '<div class="empty-hint">该分类下暂无题目</div>';
             dom.bankPagination.innerHTML = '';
             return;
         }
 
-        dom.bankList.innerHTML = data.questions.map(q => `
-            <div class="question-item" data-id="${q.id}">
-                <div class="question-item-left">
-                    <div class="question-item-title">${q.content_type === 'image' ? '🖼 ' : ''}${escapeHtml((q.content || '(图片题目)').substring(0, 100))}${(q.content || '').length > 100 ? '...' : ''}</div>
-                    <div class="question-item-meta">
-                        <span>${q.subject || '-'}</span>
-                        <span>${q.type || '-'}</span>
-                        <span>难度 ${q.difficulty}</span>
-                        <span>${q.avg_cost}min</span>
-                        ${q.has_state ? `<span>正确${q.times_correct}次</span>` : '<span style="color:var(--success)">新题</span>'}
-                    </div>
-                </div>
-                <div class="question-item-right">
-                    <button class="btn-sm btn-primary" data-action="edit" data-id="${q.id}">编辑</button>
-                    <button class="btn-sm btn-secondary-outline" data-action="practice" data-id="${q.id}">练习</button>
-                    <button class="btn-sm btn-secondary-outline" data-action="delete" data-id="${q.id}" style="color:var(--error)">删除</button>
+        state._bankQuestions = data.questions;
+        renderQuestionList(data.questions);
+        renderBankPagination();
+    } catch (e) {
+        showToast('加载题目失败: ' + e.message, true);
+    }
+}
+
+function renderQuestionList(questions) {
+    dom.bankList.innerHTML = questions.map(q => {
+        // Categorization badges
+        let catBadges = '';
+        if (q.has_subject === false) {
+            catBadges += '<span class="cat-badge cat-badge-nosubject">无科目</span>';
+        }
+        if (q.has_nodes === false) {
+            catBadges += '<span class="cat-badge cat-badge-nonodes">无知识点</span>';
+        } else if (q.node_count > 0) {
+            catBadges += `<span class="cat-badge cat-badge-ok">${q.node_count}个知识点</span>`;
+        }
+
+        return `
+        <div class="question-item" data-id="${q.id}">
+            <div class="question-item-left">
+                <div class="question-item-title">${q.content_type === 'image' ? '🖼 ' : ''}${escapeHtml((q.content || '(图片题目)').substring(0, 100))}${(q.content || '').length > 100 ? '...' : ''}</div>
+                <div class="question-item-meta">
+                    <span>${q.subject || '<i style="color:#ef4444">无科目</i>'}</span>
+                    <span>${q.type || '-'}</span>
+                    <span>难度 ${q.difficulty}</span>
+                    <span>${q.avg_cost}min</span>
+                    ${q.has_state ? `<span>正确${q.times_correct}次</span>` : '<span style="color:var(--success)">新题</span>'}
+                    ${catBadges}
                 </div>
             </div>
-        `).join('');
+            <div class="question-item-right">
+                <button class="btn-sm btn-primary" data-action="edit" data-id="${q.id}">编辑</button>
+                <button class="btn-sm btn-secondary-outline" data-action="practice" data-id="${q.id}">练习</button>
+                <button class="btn-sm btn-secondary-outline" data-action="delete" data-id="${q.id}" style="color:var(--error)">删除</button>
+            </div>
+        </div>
+        `;
+    }).join('');
 
-        dom.bankList.querySelectorAll('[data-action="edit"]').forEach(b => {
-            b.addEventListener('click', e => { e.stopPropagation(); editQuestion(parseInt(b.dataset.id)); });
-        });
-        dom.bankList.querySelectorAll('[data-action="practice"]').forEach(b => {
-            b.addEventListener('click', e => { e.stopPropagation(); practiceQuestion(parseInt(b.dataset.id)); });
-        });
-        dom.bankList.querySelectorAll('[data-action="delete"]').forEach(b => {
-            b.addEventListener('click', e => { e.stopPropagation(); deleteQuestion(parseInt(b.dataset.id)); });
-        });
+    dom.bankList.querySelectorAll('[data-action="edit"]').forEach(b => {
+        b.addEventListener('click', e => { e.stopPropagation(); openBankEditMode(parseInt(b.dataset.id)); });
+    });
+    dom.bankList.querySelectorAll('[data-action="practice"]').forEach(b => {
+        b.addEventListener('click', e => { e.stopPropagation(); practiceQuestion(parseInt(b.dataset.id)); });
+    });
+    dom.bankList.querySelectorAll('[data-action="delete"]').forEach(b => {
+        b.addEventListener('click', e => { e.stopPropagation(); deleteQuestion(parseInt(b.dataset.id)); });
+    });
+}
 
-        renderPagination();
-    } catch (e) {
-        showToast('加载题库失败: ' + e.message, true);
+function renderBankPagination() {
+    const totalPages = Math.ceil(state.bankTotal / state.bankPageSize);
+    if (totalPages <= 1) { dom.bankPagination.innerHTML = ''; return; }
+
+    let html = '';
+    for (let i = 0; i < totalPages; i++) {
+        html += `<button class="${i === state.bankCtx.page ? 'active' : ''}" data-page="${i}">${i + 1}</button>`;
     }
+    dom.bankPagination.innerHTML = html;
+    dom.bankPagination.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => loadBankQuestions(parseInt(b.dataset.page)));
+    });
+}
+
+function resetBankView() {
+    state.bankCtx = { type: null, id: null, label: '', page: 0 };
+    dom.bankListTitle.textContent = '📚 题库';
+    dom.bankBreadcrumb.style.display = 'none';
+    dom.bankList.innerHTML = '<div class="empty-hint">← 从左侧目录选择科目或知识点</div>';
+    dom.bankPagination.innerHTML = '';
+    dom.bankTree.querySelectorAll('.bank-leaf.active').forEach(l => l.classList.remove('active'));
+}
+
+// Backward-compat: switchTab calls loadBank → redirect to tree
+async function loadBank(page = 0) {
+    await loadBankTree();
+    resetBankView();
 }
 
 async function practiceQuestion(id) {
@@ -502,7 +681,8 @@ async function deleteQuestion(id) {
 }
 
 /* ---- Unattributed questions pool ---- */
-async function loadUnattributed() {
+async function loadUnattributed(filterMode = 'all') {
+    state._unattributedFilter = filterMode;
     const params = new URLSearchParams();
     const search = dom.unattributedSearch.value.trim();
     const subject = dom.filterSubject.value;
@@ -510,35 +690,68 @@ async function loadUnattributed() {
     if (search) params.set('search', search);
     if (subject) params.set('subject', subject);
     if (qtype) params.set('type', qtype);
+    if (filterMode !== 'all') params.set('filter', filterMode);
 
     try {
         const res = await fetch(`/practice/api/questions/unattributed?${params}`);
         const data = await res.json();
+        const summary = data.summary || {};
         dom.unattributedCount.textContent = `${data.total} 题未归属`;
 
+        // ── Summary bar with filter toggles ──
+        const isNoSubj = filterMode === 'no_subject';
+        const isNoNodes = filterMode === 'no_nodes';
+        const isBoth = filterMode === 'both_missing';
+        const summaryHtml = `
+            <div class="un-summary-bar">
+                <span class="un-summary-item un-summary-total">共 <strong>${data.total}</strong> 题</span>
+                <span class="un-summary-item un-summary-nosubj ${isNoSubj ? 'active' : ''}" onclick="loadUnattributed('${isNoSubj ? 'all' : 'no_subject'}')" style="cursor:pointer">
+                    🚫 缺科目 <strong>${summary.no_subject || 0}</strong>
+                </span>
+                <span class="un-summary-item un-summary-nonodes ${isNoNodes ? 'active' : ''}" onclick="loadUnattributed('${isNoNodes ? 'all' : 'no_nodes'}')" style="cursor:pointer">
+                    📎 缺知识点 <strong>${summary.no_nodes || 0}</strong>
+                </span>
+                <span class="un-summary-item un-summary-both ${isBoth ? 'active' : ''}" onclick="loadUnattributed('${isBoth ? 'all' : 'both_missing'}')" style="cursor:pointer">
+                    ⚠️ 两者都缺 <strong>${summary.both_missing || 0}</strong>
+                </span>
+                ${filterMode !== 'all' ? `<span class="un-summary-item un-summary-reset" onclick="loadUnattributed('all')" style="cursor:pointer;color:var(--primary)">✕ 清除</span>` : ''}
+            </div>`;
+
         if (data.total === 0) {
-            dom.unattributedList.innerHTML = '<div class="empty-hint">所有题目均已归属，干得漂亮！</div>';
+            dom.unattributedList.innerHTML = summaryHtml + '<div class="empty-hint">所有题目均已归属，干得漂亮！</div>';
             dom.unattributedPagination.innerHTML = '';
             return;
         }
 
-        dom.unattributedList.innerHTML = data.questions.map(q => {
+        dom.unattributedList.innerHTML = summaryHtml + data.questions.map(q => {
             const isImage = q.content_type === 'image' && q.image_url;
             const nodeOpts = data.knowledge_nodes.map(n =>
                 `<label class="un-node-check"><input type="checkbox" value="${n.id}" onchange="this.closest('.unattributed-item').classList.add('dirty')"> ${n.name} <span class="un-node-subj">${n.subject}</span></label>`
             ).join('');
 
+            // Categorization status badges (both dimensions)
+            let statusBadge = '';
+            if (!q.has_subject && !q.has_nodes) {
+                statusBadge = '<span class="cat-badge cat-badge-nosubject">🚫 缺科目</span><span class="cat-badge cat-badge-nonodes">📎 缺知识点</span>';
+            } else if (!q.has_subject) {
+                statusBadge = '<span class="cat-badge cat-badge-nosubject">🚫 缺科目</span>';
+            } else if (!q.has_nodes) {
+                statusBadge = '<span class="cat-badge cat-badge-nonodes">📎 缺知识点</span>';
+            }
+
             return `
-            <div class="unattributed-item" data-qid="${q.id}">
+            <div class="unattributed-item ${!q.has_subject && !q.has_nodes ? 'un-item-critical' : (!q.has_subject || !q.has_nodes ? 'un-item-warning' : '')}" data-qid="${q.id}">
                 <div class="un-item-left">
                     ${isImage ? `<div class="un-item-thumb-wrap"><img class="un-item-thumb" src="${q.image_url}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=un-thumb-fallback>[图片加载失败]</span>'"></div>` : ''}
-                    <div class="un-item-preview">${isImage ? (q.content ? escapeHtml(q.content.substring(0, 40)) + (q.content.length > 40 ? '...' : '') : '图片题 #' + q.id) : (q.content ? escapeHtml(q.content.substring(0, 60)) + (q.content.length > 60 ? '...' : '') : '[空]')}</div>
-                    <div class="un-item-meta">
-                        <span class="tag tag-subject">${q.subject || '无科目'}</span>
-                        <span class="tag tag-type">${q.type || '无题型'}</span>
-                        <span class="un-meta-num">难度 ${q.difficulty.toFixed(1)}</span>
-                        <span class="un-meta-num">${q.avg_cost}min</span>
-                        ${q.source ? `<span class="un-meta-num">${q.source}</span>` : ''}
+                    <div>
+                        <div class="un-item-preview">${statusBadge} ${isImage ? (q.content ? escapeHtml(q.content.substring(0, 40)) + (q.content.length > 40 ? '...' : '') : '图片题 #' + q.id) : (q.content ? escapeHtml(q.content.substring(0, 60)) + (q.content.length > 60 ? '...' : '') : '[空]')}</div>
+                        <div class="un-item-meta">
+                            <span class="tag ${q.has_subject ? 'tag-subject' : ''}" style="${!q.has_subject ? 'background:#fef2f2;color:#ef4444' : ''}">${q.subject || '无科目'}</span>
+                            <span class="tag tag-type">${q.type || '无题型'}</span>
+                            <span class="un-meta-num">难度 ${q.difficulty.toFixed(1)}</span>
+                            <span class="un-meta-num">${q.avg_cost}min</span>
+                            ${q.source ? `<span class="un-meta-num">${q.source}</span>` : ''}
+                        </div>
                     </div>
                 </div>
                 <div class="un-item-right">
@@ -667,9 +880,8 @@ async function openSingleView() {
         state.singleViewKnowledgeNodes = data.knowledge_nodes;
         state.unattributedIndex = 0;
 
-        dom.unattributedListCard.style.display = 'none';
-        dom.singleViewCard.style.display = '';
         document.addEventListener('keydown', onSingleViewKey);
+        dom.singleViewModal.classList.add('visible');
         renderSingleView();
     } catch (e) {
         showToast('加载失败: ' + e.message, true);
@@ -678,13 +890,66 @@ async function openSingleView() {
 
 function closeSingleView() {
     document.removeEventListener('keydown', onSingleViewKey);
-    dom.singleViewCard.style.display = 'none';
-    dom.unattributedListCard.style.display = '';
+    dom.singleViewModal.classList.remove('visible');
+    if (state.bankEditMode) {
+        closeBankEditMode();
+        return;
+    }
     loadUnattributed();
 }
 
+/* ---- Bank Edit Mode (reuses single-view UI with bank directory questions) ---- */
+async function openBankEditMode(qid) {
+    // Fetch all knowledge nodes for the checkbox panel
+    let knowledgeNodes = [];
+    try {
+        const nodesRes = await fetch('/practice/api/knowledge-nodes');
+        const nodesData = await nodesRes.json();
+        knowledgeNodes = nodesData.nodes || [];
+    } catch (_) {}
+
+    // Use currently displayed bank questions as the editing set
+    const questions = state._bankQuestions || [];
+    if (questions.length === 0) {
+        showToast('当前目录无题目', true);
+        return;
+    }
+
+    // Find the clicked question's index
+    let idx = questions.findIndex(q => q.id === qid);
+    if (idx < 0) idx = 0;
+
+    state.bankEditMode = true;
+    state.unattributedQuestions = questions;
+    state.singleViewKnowledgeNodes = knowledgeNodes;
+    state.unattributedIndex = idx;
+
+    // Pre-fetch current node associations for the first question
+    await _loadNodeAssociationsForQuestion(questions[idx]);
+
+    // Show single view modal over current tab
+    document.addEventListener('keydown', onSingleViewKey);
+    dom.singleViewModal.classList.add('visible');
+    renderSingleView();
+}
+
+function closeBankEditMode() {
+    state.bankEditMode = false;
+    state.unattributedQuestions = [];
+    state.unattributedIndex = 0;
+    dom.singleViewModal.classList.remove('visible');
+    // Refresh the bank tree + reload current directory
+    loadBankTree().then(() => {
+        if (state.bankCtx.type) loadBankQuestions();
+        else resetBankView();
+    });
+}
+
 function onSingleViewKey(e) {
-    if (state.activeTab !== 'unattributed' || dom.singleViewCard.style.display === 'none') return;
+    const isActive = dom.singleViewModal.classList.contains('visible');
+    const isBank = state.bankEditMode;
+    const isUnattributed = state.activeTab === 'unattributed';
+    if (!isActive || (!isUnattributed && !isBank)) return;
     // 仅在文本/下拉/数字输入框中不响应快捷键，checkbox 不阻挡
     const tag = e.target.tagName;
     if (tag === 'TEXTAREA' || (tag === 'INPUT' && e.target.type !== 'checkbox') || tag === 'SELECT') return;
@@ -695,10 +960,25 @@ function onSingleViewKey(e) {
     if (e.key === 'w' || e.key === 'W') { e.preventDefault(); clearSingleEdits(); }
 }
 
-function navigateSingle(delta) {
+async function _loadNodeAssociationsForQuestion(q) {
+    if (!q || q._nodeIds) return;
+    try {
+        const res = await fetch(`/practice/api/questions/${q.id}/knowledge-nodes`);
+        const data = await res.json();
+        q._nodeIds = new Set((data.nodes || []).map(n => n.id));
+    } catch (_) {
+        q._nodeIds = new Set();
+    }
+}
+
+async function navigateSingle(delta) {
     const max = state.unattributedQuestions.length;
     if (max === 0) return;
     state.unattributedIndex = (state.unattributedIndex + delta + max) % max;
+    // Pre-fetch node associations for bank edit mode
+    if (state.bankEditMode) {
+        await _loadNodeAssociationsForQuestion(state.unattributedQuestions[state.unattributedIndex]);
+    }
     renderSingleView();
 }
 
@@ -708,13 +988,20 @@ function renderSingleView() {
 
     const idx = state.unattributedIndex;
     const total = state.unattributedQuestions.length;
-    dom.singleViewTitle.textContent = `单题模式 #${q.id}`;
+    if (state.bankEditMode) {
+        dom.singleViewTitle.textContent = `题库编辑 · ${state.bankCtx.label || ''}`;
+    } else {
+        dom.singleViewTitle.textContent = `单题模式 #${q.id}`;
+    }
     dom.singleProgress.textContent = `${idx + 1} / ${total}`;
 
     const isImage = q.content_type === 'image' && q.image_url;
-    const nodeOpts = state.singleViewKnowledgeNodes.map(n =>
-        `<label class="un-node-check"><input type="checkbox" value="${n.id}" onchange="markSingleDirty()"> ${n.name} <span class="un-node-subj">${n.subject}</span></label>`
-    ).join('');
+    // Pre-check currently associated nodes (bank mode fetches async)
+    const checkedIds = q._nodeIds || new Set();
+    const nodeOpts = state.singleViewKnowledgeNodes.map(n => {
+        const ck = checkedIds.has ? checkedIds.has(n.id) : false;
+        return `<label class="un-node-check"><input type="checkbox" value="${n.id}" ${ck ? 'checked' : ''} onchange="markSingleDirty()"> ${n.name} <span class="un-node-subj">${n.subject}</span></label>`;
+    }).join('');
 
     dom.singleViewContent.innerHTML = `
         <div class="single-layout">
@@ -835,7 +1122,25 @@ async function saveSingleView() {
         const mark = document.getElementById('singleDirtyMark');
         if (mark) mark.style.display = 'none';
         // 重新加载数据并前进到下一题
-        await reloadSingleViewData(true);
+        if (state.bankEditMode) {
+            // Update local question object in place
+            const cur = state.unattributedQuestions[state.unattributedIndex];
+            if (cur) {
+                cur.subject = subject || '';
+                cur.type = qtype || '';
+                cur.difficulty = isNaN(difficulty) ? cur.difficulty : difficulty;
+                cur.avg_cost = isNaN(avg_cost) ? cur.avg_cost : avg_cost;
+                cur.has_subject = !!subject;
+                cur.has_nodes = knowledge_node_ids.length > 0;
+                cur.node_count = knowledge_node_ids.length;
+            }
+            // Advance to next question (wrap around)
+            const max = state.unattributedQuestions.length;
+            state.unattributedIndex = (state.unattributedIndex + 1) % max;
+            renderSingleView();
+        } else {
+            await reloadSingleViewData(true);
+        }
         loadStats();
     } catch (e) {
         showToast('保存失败: ' + e.message, true);

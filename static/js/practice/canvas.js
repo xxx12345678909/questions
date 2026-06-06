@@ -1,4 +1,4 @@
-/* ===== Canvas engine — question rendering, drawing, resize ===== */
+/* ===== Canvas engine — question rendering, drawing, resize, normalised strokes ===== */
 
 /* ---- Pointer event binding ---- */
 function initCanvasEvents() {
@@ -80,6 +80,9 @@ function renderQuestionToCanvas(question) {
 
         state._questionBottomY = textH;
     }
+
+    // Save reference dimensions for stroke normalisation
+    state._questionWidth = wrapperWidth;
 
     // Save background for non-destructive eraser
     state.backgroundCanvas = document.createElement('canvas');
@@ -197,7 +200,7 @@ function drawStrokeSegment(stroke) {
     }
 }
 
-/* ---- Redraw all stored strokes ---- */
+/* ---- Redraw all stored strokes (expects raw canvas-pixel coordinates) ---- */
 function redrawStrokes() {
     const canvas = dom.practiceCanvas;
     const ctx = canvas.getContext('2d');
@@ -269,4 +272,124 @@ function restoreBackgroundAndRedraw() {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
     redrawStrokes();
+}
+
+/* ================================================================
+   Normalised stroke format (v2) — size-independent storage
+   ================================================================
+   Store: {_v:2, _qW:800, _qH:400, strokes:[{..., points:[{x:0.3, y:0.5},...]}]}
+   Each point is a fraction (0-1) of the question area dimensions.
+   This decouples strokes from canvas size so they align on any display.
+   ================================================================ */
+
+/**
+ * Check whether strokes data is in normalised v2 format.
+ */
+function isNormalisedStrokes(data) {
+    return data && data._v === 2;
+}
+
+/**
+ * Convert raw canvas-pixel strokes to normalised v2 format for storage.
+ */
+function normaliseStrokesForStorage(rawStrokes) {
+    const qW = state._questionWidth || dom.practiceCanvas.width || 800;
+    const qH = state._questionBottomY || 400;
+    if (!rawStrokes || rawStrokes.length === 0) {
+        return { _v: 2, _qW: qW, _qH: qH, strokes: [] };
+    }
+
+    const strokes = rawStrokes.map(s => ({
+        tool: s.tool,
+        color: s.color,
+        width: s.width,
+        points: s.points.map(p => ({
+            x: p.x / qW,
+            y: p.y / qH,
+            t: p.t,
+        })),
+    }));
+
+    return { _v: 2, _qW: qW, _qH: qH, strokes: strokes };
+}
+
+/**
+ * Convert normalised v2 strokes back to raw canvas-pixel coordinates
+ * for drawing on the current practice canvas.
+ */
+function denormaliseStrokesForCanvas(data) {
+    if (!data || !data.strokes) return [];
+
+    const targetW = state._questionWidth || dom.practiceCanvas.width || 800;
+    const targetH = state._questionBottomY || 400;
+
+    return data.strokes.map(s => ({
+        tool: s.tool,
+        color: s.color,
+        width: s.width,
+        points: s.points.map(p => ({
+            x: p.x * targetW,
+            y: p.y * targetH,
+            t: p.t || 0,
+        })),
+    }));
+}
+
+/**
+ * Normalise strokes just before serialisation (cat save, answer submit).
+ * Returns the v2 wrapper ready for JSON / server.
+ */
+function packStrokesForSubmit() {
+    return normaliseStrokesForStorage(state.strokes);
+}
+
+/**
+ * Unpack strokes from server / cache into state.strokes (raw coords).
+ * Handles both legacy (array) and v2 ({_v:2, strokes:[...]}) formats.
+ */
+function unpackStrokesForCanvas(data) {
+    if (!data) { state.strokes = []; return; }
+
+    if (isNormalisedStrokes(data)) {
+        state.strokes = denormaliseStrokesForCanvas(data);
+    } else if (Array.isArray(data)) {
+        // Legacy format — use as-is (may be misaligned on different canvas size)
+        state.strokes = data;
+    } else {
+        state.strokes = [];
+    }
+    state.currentStroke = null;
+    redrawStrokes();
+}
+
+/**
+ * Render normalised strokes onto a comparison canvas.
+ * @param ctx        — 2D context of the target canvas
+ * @param normData   — v2 normalised strokes ({_v:2, _qW, _qH, strokes:[...]})
+ * @param displayW   — target display width in pixels
+ * @param displayH   — target display height in pixels (question area)
+ * @param offsetX    — x offset for drawing (default 0)
+ * @param offsetY    — y offset for drawing (default 0)
+ */
+function drawNormalisedStrokes(ctx, normData, displayW, displayH, offsetX, offsetY) {
+    offsetX = offsetX || 0;
+    offsetY = offsetY || 0;
+    if (!normData || !normData.strokes) return;
+
+    normData.strokes.forEach(s => {
+        if (!s.points || s.points.length < 2) return;
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = s.color || '#1e293b';
+        ctx.lineWidth = s.width || 2;
+        ctx.beginPath();
+        const first = s.points[0];
+        ctx.moveTo(first.x * displayW + offsetX, first.y * displayH + offsetY);
+        for (let i = 1; i < s.points.length; i++) {
+            ctx.lineTo(s.points[i].x * displayW + offsetX, s.points[i].y * displayH + offsetY);
+        }
+        ctx.stroke();
+        ctx.restore();
+    });
 }

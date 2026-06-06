@@ -73,13 +73,14 @@ function bindEvents() {
     });
 
     // Bank
-    dom.bankSearch.addEventListener('input', debounce(loadBank, 300));
+    dom.bankSearch.addEventListener('input', debounce(() => { if (state.bankCtx.type) loadBankQuestions(); }, 300));
     dom.btnAddQuestion.addEventListener('click', () => openQuestionModal());
+    if (dom.btnRefreshTree) dom.btnRefreshTree.addEventListener('click', () => { loadBankTree(); resetBankView(); });
 
     // Unattributed pool
     dom.unattributedSearch.addEventListener('input', debounce(loadUnattributed, 300));
-    dom.filterSubject.addEventListener('change', () => { if (state.activeTab === 'unattributed') loadUnattributed(); });
-    dom.filterType.addEventListener('change', () => { if (state.activeTab === 'unattributed') loadUnattributed(); });
+    dom.filterSubject.addEventListener('change', () => { if (state.activeTab === 'unattributed') loadUnattributed(state._unattributedFilter || 'all'); });
+    dom.filterType.addEventListener('change', () => { if (state.activeTab === 'unattributed') loadUnattributed(state._unattributedFilter || 'all'); });
 
     // Single view nav
     dom.btnSinglePrev.addEventListener('click', () => navigateSingle(-1));
@@ -216,6 +217,7 @@ function bindEvents() {
     // Modal backdrop clicks
     dom.questionModal.addEventListener('click', e => { if (e.target === dom.questionModal) closeQuestionModal(); });
     dom.settingsModal.addEventListener('click', e => { if (e.target === dom.settingsModal) closeSettings(); });
+    if (dom.singleViewModal) dom.singleViewModal.addEventListener('click', e => { if (e.target === dom.singleViewModal) closeSingleView(); });
 
     // Keyboard shortcuts: A/D for prev/next in CAT mode & session review mode
     document.addEventListener('keydown', e => {
@@ -495,7 +497,14 @@ function startRecordReview(record) {
 }
 
 function loadRecordStrokes(strokes) {
-    state.strokes = (strokes && Array.isArray(strokes)) ? JSON.parse(JSON.stringify(strokes)) : [];
+    // strokes may be legacy array or v2 normalised {_v:2, strokes:[...]}
+    if (strokes && isNormalisedStrokes(strokes)) {
+        state.strokes = denormaliseStrokesForCanvas(strokes);
+    } else if (strokes && Array.isArray(strokes)) {
+        state.strokes = JSON.parse(JSON.stringify(strokes));
+    } else {
+        state.strokes = [];
+    }
     state.currentStroke = null;
     redrawStrokes();
 }

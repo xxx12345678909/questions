@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>智能刷题 · 忘记曲线调度</title>
-    <link rel="stylesheet" href="/static/css/practice.css?v=11">
+    <link rel="stylesheet" href="/static/css/practice.css?v=20">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
@@ -97,19 +97,35 @@
 
                 <!-- Bank Tab -->
                 <div class="tab-content" id="tabBank">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>📚 题库</h3>
-                            <div class="card-header-actions">
-                                <input type="text" class="input-search" id="bankSearch" placeholder="搜索题目...">
-                                <button class="btn-sm btn-primary" id="btnAddQuestion">+ 新建题目</button>
+                    <div class="bank-layout">
+                        <!-- Left: subject tree -->
+                        <div class="bank-tree-panel" id="bankTreePanel">
+                            <div class="bank-tree-header">
+                                <h4>📁 科目目录</h4>
+                                <button class="btn-sm btn-secondary-outline" id="btnRefreshTree" title="刷新">↻</button>
+                            </div>
+                            <div class="bank-tree" id="bankTree">
+                                <div class="empty-hint">加载中...</div>
                             </div>
                         </div>
-                        <div class="card-body">
-                            <div class="question-list" id="bankList">
-                                <div class="empty-hint">暂无题目，点击「新建题目」添加</div>
+                        <!-- Right: question list -->
+                        <div class="bank-list-panel">
+                            <div class="card" style="margin-bottom:0">
+                                <div class="card-header">
+                                    <h3 id="bankListTitle">📚 题库</h3>
+                                    <div class="card-header-actions">
+                                        <input type="text" class="input-search" id="bankSearch" placeholder="搜索题目...">
+                                        <button class="btn-sm btn-primary" id="btnAddQuestion">+ 新建题目</button>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="bank-breadcrumb" id="bankBreadcrumb" style="display:none"></div>
+                                    <div class="question-list" id="bankList">
+                                        <div class="empty-hint">← 从左侧目录选择科目或知识点</div>
+                                    </div>
+                                    <div class="pagination" id="bankPagination"></div>
+                                </div>
                             </div>
-                            <div class="pagination" id="bankPagination"></div>
                         </div>
                     </div>
                 </div>
@@ -382,26 +398,6 @@
                         </div>
                     </div>
 
-                    <!-- Single View Mode -->
-                    <div class="card" id="singleViewCard" style="display:none">
-                        <div class="card-header">
-                            <h3 id="singleViewTitle">单题模式</h3>
-                            <div class="card-header-actions">
-                                <span class="single-nav-hint">A/D 切换 · S 保存 · W 清空</span>
-                                <button class="btn-sm btn-secondary-outline" onclick="closeSingleView()">返回列表</button>
-                            </div>
-                        </div>
-                        <div class="card-body">
-                            <div class="single-view-content" id="singleViewContent"></div>
-                            <div class="single-nav-row">
-                                <button class="btn-sm btn-secondary-outline" id="btnSinglePrev">← 上一题 (A)</button>
-                                <span class="single-progress" id="singleProgress">1 / 41</span>
-                                <button class="btn-sm btn-primary" id="btnSingleSave" onclick="saveSingleView()">保存 (S)</button>
-                                <button class="btn-sm btn-secondary-outline" onclick="clearSingleEdits()">清空 (W)</button>
-                                <button class="btn-sm btn-secondary-outline" id="btnSingleNext">下一题 (D) →</button>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
 
@@ -606,17 +602,40 @@
         </div>
     </div>
 
+    <!-- Single View Modal (global overlay — usable from any tab) -->
+    <div class="modal-overlay" id="singleViewModal">
+        <div class="modal-card" style="max-width:900px;max-height:92vh">
+            <div class="modal-header">
+                <h3 id="singleViewTitle">单题模式</h3>
+                <div class="card-header-actions">
+                    <span class="single-nav-hint">A/D 切换 · S 保存 · W 清空</span>
+                    <button class="modal-close" onclick="closeSingleView()">×</button>
+                </div>
+            </div>
+            <div class="modal-body" style="padding: 12px 20px; gap:8px">
+                <div class="single-view-content" id="singleViewContent"></div>
+                <div class="single-nav-row">
+                    <button class="btn-sm btn-secondary-outline" id="btnSinglePrev">← 上一题 (A)</button>
+                    <span class="single-progress" id="singleProgress">1 / 41</span>
+                    <button class="btn-sm btn-primary" id="btnSingleSave" onclick="saveSingleView()">保存 (S)</button>
+                    <button class="btn-sm btn-secondary-outline" onclick="clearSingleEdits()">清空 (W)</button>
+                    <button class="btn-sm btn-secondary-outline" id="btnSingleNext">下一题 (D) →</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div class="toast" id="toast"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
-    <script src="/static/js/practice/state.js?v=13"></script>
-    <script src="/static/js/practice/ui.js?v=10"></script>
-    <script src="/static/js/practice/api.js?v=14"></script>
-    <script src="/static/js/practice/canvas.js?v=10"></script>
+    <script src="/static/js/practice/state.js?v=17"></script>
+    <script src="/static/js/practice/ui.js?v=14"></script>
+    <script src="/static/js/practice/api.js?v=18"></script>
+    <script src="/static/js/practice/canvas.js?v=11"></script>
     <script src="/static/js/practice/pdf.js?v=11"></script>
     <script src="/static/js/practice/graph.js?v=11"></script>
-    <script src="/static/js/practice/main.js?v=15"></script>
-    <script src="/static/js/practice/cat.js?v=5"></script>
+    <script src="/static/js/practice/main.js?v=16"></script>
+    <script src="/static/js/practice/cat.js?v=6"></script>
 </body>
 </html>
