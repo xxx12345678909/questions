@@ -100,7 +100,10 @@ def _sqlite_process_safe_factory():
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
-# V5 process worker — gated by enable_v5_process config (soft switch for circuit-breaking)
+# V5 process worker — only on Linux (Windows multiprocessing.Process requires __main__ guard)
+import os as _os
+import logging as _logging
+
 _v5_enabled = DEFAULT_CONFIG.get('enable_v5_process', 'true')
 try:
     import sqlite3 as _sql
@@ -113,20 +116,26 @@ try:
 except Exception:
     pass
 
-if _v5_enabled in ('true', '1', 'yes', True):
+if _v5_enabled in ('true', '1', 'yes', True) and _os.name == 'posix':
+    # Linux/macOS: multiprocessing.Process with fork — full GIL bypass
     from practice.scheduler.process_worker import init_isolated_process_cluster  # noqa: E402
-
     try:
-        init_isolated_process_cluster(_sqlite_process_safe_factory)
+        _proc = init_isolated_process_cluster(_sqlite_process_safe_factory)
+        if _proc:
+            _logging.getLogger("Practice").info(
+                "V5 process-isolated worker mounted (pid=%d)", _proc.pid
+            )
     except Exception:
-        import logging
-        logging.getLogger("Practice").warning(
-            "Process-isolated worker cluster failed to mount — using thread fallback"
+        _logging.getLogger("Practice").warning(
+            "Process-isolated worker cluster failed to mount — using thread worker with debounce"
         )
+elif _os.name == 'nt':
+    _logging.getLogger("Practice").info(
+        "Windows detected — using thread worker with debounce (multiprocessing skipped)"
+    )
 else:
-    import logging
-    logging.getLogger("Practice").info(
-        "V5 process worker disabled by enable_v5_process config — using thread worker only"
+    _logging.getLogger("Practice").info(
+        "V5 process worker disabled — using thread worker with debounce"
     )
 
 

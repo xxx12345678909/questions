@@ -1,17 +1,23 @@
 """
-Asynchronous background-worker — lightweight in-process task queue.
+Asynchronous background-worker — lightweight in-process task queue with debounce.
 
 The worker drains tasks from a thread-safe queue on a daemon thread,
 each with its own SQLite connection to avoid multi-threaded context
-deadlocks.  This keeps heavy aggregation (mastery recalc, DAG path
-search) out of the HTTP request/response hot-path.
+deadlocks.  A 2-second debounce window merges duplicate node_id tasks
+so update_node_mastery runs at most once per node per window.
+
+This keeps heavy aggregation (mastery recalc, DAG path search) out of
+the HTTP request/response hot-path.
 """
 import queue
 import threading
 import logging
+import time
 
 task_queue = queue.Queue(maxsize=1000)
 logger = logging.getLogger("PracticeWorker")
+
+DEBOUNCE_SECONDS = 2.0
 
 
 class GraphTaskType:
@@ -20,25 +26,53 @@ class GraphTaskType:
 
 
 def background_worker_loop(db_factory_func):
-    """Daemon event-loop — blocks on the task queue, processes graph tasks."""
+    """Daemon event-loop with debounce — drains queue in time windows, deduplicates."""
     db = db_factory_func()
-    logger.info("Background adaptive-computation worker thread started.")
+    logger.info(
+        "Background adaptive-computation worker thread started (debounce=%ss).",
+        DEBOUNCE_SECONDS,
+    )
 
     while True:
         try:
-            task = task_queue.get(block=True)
-            task_type = task.get("type")
-            payload = task.get("payload", {})
+            # --- Block for the first task ---
+            first_task = task_queue.get(block=True)
 
-            if task_type == GraphTaskType.UPDATE_NODE_MASTERY:
-                node_id = payload.get("node_id")
-                from practice.engine import update_node_mastery
+            window_start = time.time()
+            debounce_set = set()
+
+            if first_task.get("type") == GraphTaskType.UPDATE_NODE_MASTERY:
+                debounce_set.add(first_task["payload"].get("node_id"))
+
+            # --- Non-blocking drain within the debounce window ---
+            while time.time() - window_start < DEBOUNCE_SECONDS:
+                try:
+                    next_task = task_queue.get(block=False)
+                    if next_task.get("type") == GraphTaskType.UPDATE_NODE_MASTERY:
+                        debounce_set.add(next_task["payload"].get("node_id"))
+                except queue.Empty:
+                    time.sleep(0.05)
+
+            # --- Execute deduplicated work ---
+            if debounce_set:
                 logger.info(
-                    "Async recompute mastery for knowledge node #%s", node_id
+                    "Debounce window closed — %d unique node(s) to recompute.",
+                    len(debounce_set),
                 )
-                update_node_mastery(db, node_id)
+                from practice.engine import update_node_mastery
 
-            task_queue.task_done()
+                for node_id in debounce_set:
+                    try:
+                        update_node_mastery(db, node_id)
+                    except Exception:
+                        logger.exception(
+                            "Mastery recompute failed for node #%s", node_id
+                        )
+                try:
+                    db.commit()
+                except Exception:
+                    logger.exception("Worker db.commit() failed")
+
         except Exception:
             logger.exception("Async worker pipeline error")
 
