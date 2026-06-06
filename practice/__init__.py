@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     'retention_threshold': '0.6',
     'max_consecutive_type': '5',
     'enable_irt': 'true',
+    'enable_v5_process': 'true',
 }
 
 # Database initialization
@@ -79,6 +80,7 @@ def _sqlite_db_factory():
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
+# Thread-based worker (legacy fallback)
 from practice.scheduler.worker import init_worker_thread  # noqa: E402
 
 try:
@@ -86,5 +88,68 @@ try:
 except Exception:
     import logging
     logging.getLogger("Practice").warning(
-        "Background async-computation worker failed to mount"
+        "Background async-computation thread worker failed to mount"
     )
+
+# Process-isolated worker (primary — bypasses GIL, has debounce)
+def _sqlite_process_safe_factory():
+    import sqlite3
+    conn = sqlite3.connect(DATABASE, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    return conn
+
+# V5 process worker — gated by enable_v5_process config (soft switch for circuit-breaking)
+_v5_enabled = DEFAULT_CONFIG.get('enable_v5_process', 'true')
+try:
+    import sqlite3 as _sql
+    _cfg_conn = _sql.connect(DATABASE)
+    _cfg_conn.row_factory = _sql.Row
+    _row = _cfg_conn.execute("SELECT value FROM config WHERE key='enable_v5_process'").fetchone()
+    if _row:
+        _v5_enabled = _row['value']
+    _cfg_conn.close()
+except Exception:
+    pass
+
+if _v5_enabled in ('true', '1', 'yes', True):
+    from practice.scheduler.process_worker import init_isolated_process_cluster  # noqa: E402
+
+    try:
+        init_isolated_process_cluster(_sqlite_process_safe_factory)
+    except Exception:
+        import logging
+        logging.getLogger("Practice").warning(
+            "Process-isolated worker cluster failed to mount — using thread fallback"
+        )
+else:
+    import logging
+    logging.getLogger("Practice").info(
+        "V5 process worker disabled by enable_v5_process config — using thread worker only"
+    )
+
+
+def create_app():
+    """
+    Application factory — wires the practice blueprint into a Flask app
+    with all DB migrations run and background workers launched.
+
+    Usage:
+        from practice import create_app
+        app = create_app()
+    """
+    from flask import Flask
+
+    # Point template_folder at the project-root templates/ directory
+    _project_root = os.path.dirname(os.path.dirname(__file__))
+    app = Flask(__name__, template_folder=os.path.join(_project_root, "templates"))
+
+    app.register_blueprint(practice_bp, url_prefix="/practice")
+
+    @app.route("/")
+    def root():
+        from flask import redirect
+        return redirect("/practice/")
+
+    return app

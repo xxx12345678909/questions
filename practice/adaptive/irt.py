@@ -1,8 +1,19 @@
 """
 IRT/IRM-inspired adaptive difficulty and mastery modeling — pure computation.
 No Flask or database dependencies.
+
+The 3PL IRT core (calc_irt_probability, calibrate_irt_parameters,
+calc_irt_difficulty_damping) lives in practice.core.irt and is re-exported
+here per the module spec in 开发文档5 §3.2.
 """
 import math
+
+# Re-export 3PL IRT functions from their canonical pure-math location
+from practice.core.irt import (           # noqa: E402, F401
+    calc_irt_probability,
+    calibrate_irt_parameters,
+    calc_irt_difficulty_damping,
+)
 
 
 def calc_difficulty_damping(diff_q, theta_n, sigma=0.20):

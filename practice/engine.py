@@ -13,14 +13,15 @@ from datetime import datetime, UTC
 
 # Re-export all pure functions from their canonical modules
 from practice.core.ebbinghaus import (
-    calc_retention, calc_priority, calc_score,
-    update_lambda, update_lambda_with_time_cost,
+    calc_retention, calc_retention_pure, calc_priority, calc_score,
+    update_lambda, update_lambda_with_time_cost, evolve_lambda_by_time_cost,
     update_cost, update_accuracy, calc_time_cost_adjustment,
 )
 from practice.graph.damping import calc_prerequisite_damping
 from practice.adaptive.fatigue import calc_fatigue, calc_fatigue_adjusted_score
 from practice.adaptive.irt import calc_difficulty_damping, calc_mastery
-from practice.core.irt import calc_irt_probability, calibrate_irt_parameters, calc_irt_difficulty_damping
+# IRT 3PL functions: canonical home is core.irt, re-exported by adaptive.irt per 开发文档5 §3.2
+from practice.core.irt import calc_irt_probability, calibrate_irt_parameters, calc_irt_difficulty_damping  # noqa: F401
 
 
 # ================================================================

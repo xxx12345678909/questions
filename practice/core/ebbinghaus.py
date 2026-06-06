@@ -28,6 +28,18 @@ def calc_retention(lambda_, last_review, now=None):
     return math.exp(-lambda_ * delta)
 
 
+def calc_retention_pure(lambda_val, seconds_since_review):
+    """
+    【纯函数】R(t) = exp(-lambda * hours_since_review)
+    输入 Lambda 隐变量与距离上一次复习的精确秒数，求解记忆保留率。
+    与 calc_retention 不同，此函数不依赖 datetime 对象，完全基于秒数计算。
+    """
+    if seconds_since_review is None or seconds_since_review < 0:
+        return 0.0
+    delta_hours = seconds_since_review / 3600.0
+    return math.exp(-lambda_val * delta_hours)
+
+
 def calc_priority(lambda_, last_review, subject, times_wrong, now=None):
     """priority = (1 - retention) * weight, with subject + wrong bonus."""
     r = calc_retention(lambda_, last_review, now)
@@ -81,6 +93,10 @@ def update_lambda_with_time_cost(old_lambda, success, time_spent, avg_cost):
         new_lambda = old_lambda * 0.8 if success else old_lambda * 1.2
 
     return max(0.01, min(5.0, new_lambda))
+
+
+# Documented alias — matches the spec name in 开发文档5 §3.1
+evolve_lambda_by_time_cost = update_lambda_with_time_cost
 
 
 def update_lambda(old_lambda, success):
