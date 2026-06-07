@@ -8,14 +8,9 @@ import random as _random
 from datetime import datetime, UTC
 
 from practice import SUBJECT_WEIGHTS
-from practice.core.ebbinghaus import calc_score
-from practice.graph.damping import calc_prerequisite_damping
-from practice.adaptive.fatigue import calc_fatigue_adjusted_score
-from practice.adaptive.irt import calc_difficulty_damping
-from practice.core.irt import calc_irt_difficulty_damping
+from practice.adaptive.unified import unified_score
 from practice.repository.knowledge_repo import (
-    batch_get_prerequisite_retentions, get_node_sliding_accuracy,
-    fetch_all_nodes_irt_theta,
+    batch_get_prerequisite_retentions, fetch_all_nodes_irt_theta,
 )
 from practice.repository.question_repo import fetch_all_questions_with_state
 
@@ -62,14 +57,7 @@ def build_recommendation(db, budget, review_ratio, wrong_ratio, new_ratio,
     """
     now = datetime.now(UTC).replace(tzinfo=None)
 
-    # Pre-compute sliding window accuracy per knowledge node for DDA (legacy)
-    node_theta_cache = {}
-    if enable_difficulty_adaptation and not enable_irt:
-        nodes = db.execute('SELECT id FROM knowledge_nodes').fetchall()
-        for n in nodes:
-            node_theta_cache[n['id']] = get_node_sliding_accuracy(db, n['id'])
-
-    # Pre-fetch IRT theta values for all knowledge nodes (v5)
+    # Pre-fetch IRT theta values for all knowledge nodes
     node_irt_theta = {}
     if enable_irt:
         node_irt_theta = fetch_all_nodes_irt_theta(db)
@@ -103,42 +91,43 @@ def build_recommendation(db, budget, review_ratio, wrong_ratio, new_ratio,
         lambda_ = row['lambda_'] if row['lambda_'] is not None else 0.3
         last_review = row['last_review']
         times_wrong = row['times_wrong'] if row['times_wrong'] is not None else 0
+        subject_weight = SUBJECT_WEIGHTS.get(subject, 1.0)
 
-        # 1D: base forgetting curve score
-        score, priority, retention = calc_score(
-            lambda_, last_review, subject, times_wrong, avg_cost, now
-        )
+        # Compute seconds since last review
+        seconds_since_review = None
+        if last_review is not None:
+            if isinstance(last_review, str):
+                from datetime import datetime as _dt
+                last_review = _dt.fromisoformat(last_review)
+            seconds_since_review = (now - last_review).total_seconds()
 
-        # 2D: cascade prerequisite knowledge graph damping
-        damping = 1.0
+        # Graph prerequisite retentions
+        prereq_retentions = []
         if enable_knowledge_graph:
             prereq_retentions = prereq_retention_cache.get(qid, [])
-            damping = calc_prerequisite_damping(prereq_retentions, retention_threshold=threshold)
-            score = score * damping
 
-        # 3D: cascade difficulty-ability matching damping
-        difficulty_damping = 1.0
+        # IRT theta (pre-loaded)
+        irt_b = row['irt_b'] if row['irt_b'] is not None else 0.0
         node_ids = q_to_nodes.get(qid, [])
-        if enable_irt:
-            # v5: IRT 3PL-based ZPD damping (replaces heuristic Gaussian)
-            irt_b = row['irt_b'] if row['irt_b'] is not None else 0.0
-            if node_ids:
-                thetas = [node_irt_theta.get(nid, 0.0) for nid in node_ids]
-                avg_theta = sum(thetas) / len(thetas)
-                difficulty_damping = calc_irt_difficulty_damping(avg_theta, irt_b)
-            else:
-                difficulty_damping = calc_irt_difficulty_damping(0.0, irt_b)
-            score = score * difficulty_damping
-        elif enable_difficulty_adaptation and node_theta_cache:
-            if node_ids:
-                thetas = [node_theta_cache.get(nid, 0.5) for nid in node_ids]
-                avg_theta = sum(thetas) / len(thetas)
-                difficulty_damping = calc_difficulty_damping(difficulty, avg_theta)
-                score = score * difficulty_damping
+        avg_theta = 0.0
+        if enable_irt and node_ids:
+            thetas = [node_irt_theta.get(nid, 0.0) for nid in node_ids]
+            avg_theta = sum(thetas) / len(thetas)
 
-        # 4D: physiological fatigue step-down weighting
-        if fatigue is not None and fatigue > 0:
-            score = calc_fatigue_adjusted_score(score, fatigue, difficulty)
+        # --- Unified scoring: all 4 dimensions in one call ---
+        score, priority, retention, damping, difficulty_damping, _fatigue_factor = unified_score(
+            theta_irt=avg_theta if enable_irt else None,
+            lambda_=lambda_,
+            seconds_since_review=seconds_since_review,
+            subject_weight=subject_weight,
+            irt_b=irt_b if enable_irt else None,
+            prereq_retentions=prereq_retentions if enable_knowledge_graph else [],
+            avg_cost=avg_cost,
+            times_wrong=times_wrong,
+            fatigue=fatigue or 0.0,
+            difficulty=difficulty,
+            retention_threshold=threshold,
+        )
 
         content_type = row['content_type'] if 'content_type' in row.keys() else 'text'
         image_path = row['image_path'] if 'image_path' in row.keys() else ''
