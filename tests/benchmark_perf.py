@@ -20,10 +20,10 @@ import urllib.error
 # ================================================================
 # Configuration
 # ================================================================
-BASE_URL = "http://127.0.0.1:8080/practice/api/answer"
-QUESTIONS_URL = "http://127.0.0.1:8080/practice/api/questions?limit=100"
-CONCURRENT_USERS = 30       # virtual concurrent users
-REQUESTS_PER_USER = 10      # requests per user
+BASE_PORT = 8090
+CLUSTER_PORTS = 1            # number of cluster instances (set by --cluster N)
+CONCURRENT_USERS = 30        # virtual concurrent users
+REQUESTS_PER_USER = 10       # requests per user
 TOTAL_EXPECTED = CONCURRENT_USERS * REQUESTS_PER_USER
 
 # Shared state (guarded by status_lock)
@@ -37,11 +37,18 @@ status_lock = threading.Lock()
 _valid_question_ids = []
 
 
+def _base_url_for_seq(seq_id):
+    """Round-robin across cluster ports."""
+    port = BASE_PORT + (seq_id % CLUSTER_PORTS)
+    return f"http://127.0.0.1:{port}/practice/api/answer"
+
+
 def _discover_question_ids():
     """Fetch real question IDs from the server — self-healing against DB gaps."""
     global _valid_question_ids
     try:
-        req = urllib.request.Request(QUESTIONS_URL)
+        url = f"http://127.0.0.1:{BASE_PORT}/practice/api/questions?limit=100"
+        req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             _valid_question_ids = [q["id"] for q in data.get("questions", [])]
@@ -63,7 +70,7 @@ def send_answer_request(user_id, seq_id, sync_mode=False):
     """Simulate one answer-submission HTTP request."""
     global error_count, lock_error_count, success_count
 
-    url = BASE_URL + ("?sync=1" if sync_mode else "")
+    url = _base_url_for_seq(seq_id) + ("?sync=1" if sync_mode else "")
     payload = {
         "question_id": _pick_question_id(seq_id),
         "is_correct": (seq_id % 2 == 0),
@@ -189,7 +196,27 @@ def print_comparison(results):
 
 
 if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else "both"
+    args = sys.argv[1:]
+    mode = "both"
+    cluster = 1
+
+    for a in args:
+        if a.startswith("--cluster="):
+            cluster = int(a.split("=")[1])
+        elif a.startswith("--users="):
+            CONCURRENT_USERS = int(a.split("=")[1])
+            TOTAL_EXPECTED = CONCURRENT_USERS * REQUESTS_PER_USER
+        elif a.startswith("--reqs="):
+            REQUESTS_PER_USER = int(a.split("=")[1])
+            TOTAL_EXPECTED = CONCURRENT_USERS * REQUESTS_PER_USER
+        elif a in ("sync", "async", "both"):
+            mode = a
+
+    CLUSTER_PORTS = int(cluster)
+    TOTAL_EXPECTED = CONCURRENT_USERS * REQUESTS_PER_USER
+    if cluster > 1:
+        print(f"Cluster mode: {cluster} instances (ports {BASE_PORT}-{BASE_PORT + cluster - 1})")
+
     results = []
 
     if mode in ("sync", "both"):
