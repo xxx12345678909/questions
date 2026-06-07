@@ -78,16 +78,83 @@
         }
 
         _bindEvents() {
+            const self = this;
             this.chart.off('click');
             this.chart.off('dblclick');
+            this.chart.off('contextmenu');
 
             this.chart.on('click', 'series', p => {
-                if (p.dataType === 'node') this._showNodeDetail(p.data);
+                // Shift+click = quick edit node
+                if (p.dataType === 'node' && p.event.event?.shiftKey) {
+                    openNodeEditor(p.data);
+                    return;
+                }
+                if (p.dataType === 'node') self._showNodeDetail(p.data);
+                self._hideCtxMenu();
             });
 
             this.chart.on('dblclick', 'series', p => {
-                if (p.dataType === 'node') this._loadLearningPath(p.data);
+                if (p.dataType === 'node') self._loadLearningPath(p.data);
             });
+
+            // Right-click context menu
+            this.chart.on('contextmenu', 'series', p => {
+                p.event.event.preventDefault();
+                if (p.dataType === 'node') self._showContextMenu(p.data, p.event.event);
+            });
+
+            // Click elsewhere closes menu
+            this.chart.getDom().addEventListener('click', () => self._hideCtxMenu());
+            document.addEventListener('click', e => {
+                if (!e.target.closest('.graph-ctx-menu')) self._hideCtxMenu();
+            });
+        }
+
+        _showContextMenu(nodeData, evt) {
+            this._hideCtxMenu();
+            this._ctxNode = nodeData;
+
+            const menu = document.createElement('div');
+            menu.className = 'graph-ctx-menu';
+            menu.style.cssText = `position:fixed;left:${evt.clientX}px;top:${evt.clientY}px;z-index:9999;
+                background:#1e293b;border:1px solid #334155;border-radius:8px;padding:4px 0;
+                min-width:160px;box-shadow:0 8px 24px rgba(0,0,0,0.4);font-size:13px`;
+
+            const items = [
+                { label: '✏️ 编辑节点', action: () => openNodeEditor(nodeData) },
+                { label: '🔗 设为此节点前置', action: () => {
+                    document.getElementById('edgeSource').value = nodeData.id;
+                    showToast('已选中 ' + (nodeData.label || nodeData.name) + ' 为前置节点，请在右侧选择目标节点');
+                }},
+                { label: '📍 查看学习路径', action: () => this._loadLearningPath(nodeData) },
+                { label: '—', action: null },
+                { label: '🗑️ 删除节点', action: () => deleteNode(nodeData), cls: 'danger' },
+            ];
+
+            items.forEach(it => {
+                if (it.label === '—') {
+                    const sep = document.createElement('div');
+                    sep.style.cssText = 'border-top:1px solid #334155;margin:4px 0';
+                    menu.appendChild(sep);
+                } else {
+                    const btn = document.createElement('button');
+                    btn.textContent = it.label;
+                    btn.style.cssText = `display:block;width:100%;text-align:left;padding:6px 14px;
+                        background:none;border:none;color:${it.cls === 'danger' ? '#f87171' : '#e2e8f0'};
+                        cursor:pointer;font-size:13px`;
+                    btn.addEventListener('mouseenter', () => btn.style.background = '#334155');
+                    btn.addEventListener('mouseleave', () => btn.style.background = 'none');
+                    btn.addEventListener('click', () => { this._hideCtxMenu(); if (it.action) it.action(); });
+                    menu.appendChild(btn);
+                }
+            });
+
+            document.body.appendChild(menu);
+            this._ctxMenu = menu;
+        }
+
+        _hideCtxMenu() {
+            if (this._ctxMenu) { this._ctxMenu.remove(); this._ctxMenu = null; }
         }
 
         _showNodeDetail(n) {
@@ -102,7 +169,7 @@
                 <div class="node-detail-row"><span>掌握度</span><span style="color:${color};font-weight:600">${m.toFixed(0)}%</span></div>
                 <div class="node-detail-row"><span>胜率</span><span>${((n.accuracy || 0) * 100).toFixed(0)}%</span></div>
                 <div class="node-detail-bar" style="background:${color};width:${m}%"></div>
-                <div style="font-size:10px;color:#94a3b8;margin-top:6px">双击节点查看最优复习路径</div>
+                <div style="font-size:10px;color:#94a3b8;margin-top:6px">右键节点编辑 | Shift+点击快速编辑 | 双击查看路径</div>
             `;
         }
 
@@ -251,6 +318,72 @@
         } catch (e) { alert('删除失败: ' + e.message); }
     }
 
+    // ---- 节点编辑模态框 ----
+
+    function openNodeEditor(nodeData) {
+        // Remove existing editor
+        const old = document.getElementById('nodeEditorOverlay');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'nodeEditorOverlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9998;display:flex;align-items:center;justify-content:center';
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+        overlay.innerHTML = `
+            <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px;width:360px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,0.5)">
+                <h3 style="margin:0 0 16px;font-size:16px">✏️ 编辑知识点</h3>
+                <div style="margin-bottom:12px">
+                    <label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">名称</label>
+                    <input id="editNodeName" value="${escapeHtml(nodeData.label || nodeData.name || '')}"
+                        style="width:100%;padding:8px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:14px;box-sizing:border-box">
+                </div>
+                <div style="margin-bottom:12px">
+                    <label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">科目</label>
+                    <select id="editNodeSubject" style="width:100%;padding:8px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:14px;box-sizing:border-box">
+                        <option value="">选择科目</option>
+                        ${['高数','线代','408','英语','概率','算法','数学','政治'].map(s => `<option value="${s}" ${(nodeData.category||'') === s ? 'selected' : ''}>${s}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="node-edit-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+                    <button onclick="document.getElementById('nodeEditorOverlay').remove()"
+                        style="padding:8px 16px;background:#334155;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px">取消</button>
+                    <button onclick="saveNodeEdit(${nodeData.id})"
+                        style="padding:8px 16px;background:#4f46e5;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px">保存</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+    }
+
+    window.saveNodeEdit = async function(nodeId) {
+        const name = document.getElementById('editNodeName')?.value.trim();
+        const subject = document.getElementById('editNodeSubject')?.value;
+        if (!name) { alert('名称不能为空'); return; }
+        try {
+            const r = await fetch('/practice/api/knowledge-nodes/' + nodeId, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, subject }),
+            });
+            const d = await r.json();
+            if (d.error) { alert(d.error); return; }
+            document.getElementById('nodeEditorOverlay')?.remove();
+            showToast('知识点已更新');
+            engine && engine.refreshGraph();
+        } catch (e) { alert('更新失败: ' + e.message); }
+    };
+
+    async function deleteNode(nodeData) {
+        if (!confirm('确定删除知识点「' + (nodeData.label || nodeData.name) + '」？关联的题目映射和依赖也会被清除。')) return;
+        try {
+            const r = await fetch('/practice/api/knowledge-nodes/' + nodeData.id, { method: 'DELETE' });
+            const d = await r.json();
+            if (d.error) { alert(d.error); return; }
+            showToast('知识点已删除');
+            engine && engine.refreshGraph();
+        } catch (e) { alert('删除失败: ' + e.message); }
+    }
+
     // ---- 按钮 & 标签切换 ----
 
     document.getElementById('btnRefreshGraph')?.addEventListener('click', () => { engine && engine.refreshGraph(); });
@@ -258,6 +391,7 @@
     document.getElementById('btnCreateNode')?.addEventListener('click', createNode);
     document.getElementById('btnAddEdge')?.addEventListener('click', addEdge);
     document.getElementById('btnRemoveEdge')?.addEventListener('click', removeEdge);
+    document.getElementById('btnCpmCompute')?.addEventListener('click', computeCpm);
 
     const _orig = window.switchTab;
     window.switchTab = function (name) {
@@ -265,5 +399,60 @@
         if (name === 'graph') setTimeout(onTabShow, 100);
         else onTabHide();
     };
+
+    /* ---- CPM Critical Path ---- */
+    async function computeCpm() {
+        const el = document.getElementById('cpmResult');
+        el.innerHTML = '<div class=\"empty-hint\">计算中...</div>';
+        try {
+            const r = await fetch('/practice/api/cpm/critical-path');
+            const d = await r.json();
+            if (d.error) { el.innerHTML = '<div class=\"empty-hint\">' + d.error + '</div>'; return; }
+
+            let html = '<div style=\"margin-bottom:12px;font-weight:600\">';
+            html += '⏱️ 最短复习时间：<span style=\"color:#4f46e5;font-size:18px\">' + d.total_hours + ' 小时</span>';
+            html += '<span style=\"margin-left:16px;color:var(--text-muted);font-size:12px\">';
+            html += '掌握度阈值 ' + (d.settings.mastery_threshold * 100).toFixed(0) + '% | ';
+            html += '每缺口单位 ' + d.settings.hours_per_unit + 'h</span></div>';
+
+            if (d.critical_path.length === 0) {
+                html += '<div class=\"empty-hint\">所有知识点均已掌握，无关键路径</div>';
+            } else {
+                html += '<div style=\"display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:16px\">';
+                html += '<span style=\"font-weight:600;font-size:13px\">🔴 关键链：</span>';
+                for (let i = 0; i < d.critical_path.length; i++) {
+                    const n = d.critical_path[i];
+                    html += '<span style=\"background:#fee2e2;border:2px solid #ef4444;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600\">';
+                    html += n.name + ' <span style=\"color:#dc2626\">' + Math.round(n.mastery * 100) + '%</span>';
+                    html += '</span>';
+                    if (i < d.critical_path.length - 1) {
+                        html += '<span style=\"color:var(--text-muted);font-weight:700\">→</span>';
+                    }
+                }
+                html += '</div>';
+            }
+
+            // All nodes table
+            html += '<table style=\"width:100%;border-collapse:collapse;font-size:12px\"><thead><tr style=\"text-align:left;border-bottom:2px solid var(--border)\">';
+            html += '<th style=\"padding:4px 6px\">知识点</th><th style=\"padding:4px 6px\">掌握</th><th style=\"padding:4px 6px\">缺口</th><th style=\"padding:4px 6px\">最早 ve</th><th style=\"padding:4px 6px\">最迟 vl</th><th style=\"padding:4px 6px\">松弛</th></tr></thead><tbody>';
+            for (const n of d.all_nodes) {
+                const isCrit = n.is_critical;
+                const bg = isCrit ? 'background:#fef2f2' : '';
+                html += '<tr style=\"border-bottom:1px solid var(--border);' + bg + '\">';
+                html += '<td style=\"padding:4px 6px;font-weight:' + (isCrit ? '700' : '400') + '\">' + (isCrit ? '🔴 ' : '') + n.name + '</td>';
+                html += '<td style=\"padding:4px 6px\">' + Math.round(n.mastery * 100) + '%</td>';
+                html += '<td style=\"padding:4px 6px\">' + n.gap.toFixed(2) + '</td>';
+                html += '<td style=\"padding:4px 6px\">' + n.ve + 'h</td>';
+                html += '<td style=\"padding:4px 6px\">' + n.vl + 'h</td>';
+                html += '<td style=\"padding:4px 6px;color:' + (n.slack === 0 ? '#dc2626;font-weight:700' : 'var(--text-muted)') + '\">' + n.slack.toFixed(1) + '</td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+
+            el.innerHTML = html;
+        } catch (e) {
+            el.innerHTML = '<div class=\"empty-hint\">计算失败: ' + e.message + '</div>';
+        }
+    }
 
 })();

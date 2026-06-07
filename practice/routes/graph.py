@@ -464,3 +464,71 @@ def mastery_heatmap():
         'subjects': subjects_order,
         'total': len(heatmap_data),
     })
+
+
+# ================================================================
+# CPM — Critical Path Method for study planning
+# ================================================================
+
+@graph_bp.route('/api/cpm/critical-path', methods=['GET'])
+def cpm_critical_path():
+    """
+    Compute the CPM critical path through the knowledge DAG.
+
+    Edge weight = mastery_gap × hours_per_unit.
+    Returns the sequence of knowledge nodes that determine the minimum
+    total study time, plus all nodes with their slack values.
+    """
+    db = get_db()
+    threshold = request.args.get('mastery_threshold', type=float, default=0.7)
+    hours_per_unit = request.args.get('hours_per_unit', type=float, default=10.0)
+
+    # Fetch all knowledge nodes with mastery
+    nodes = db.execute('''
+        SELECT id, name, subject, COALESCE(current_mastery, 0.0) as mastery
+        FROM knowledge_nodes
+    ''').fetchall()
+
+    if not nodes:
+        return jsonify({'error': '知识图谱为空，请先添加知识点'}), 404
+
+    node_masteries = {n['id']: n['mastery'] for n in nodes}
+    node_names = {n['id']: n['name'] for n in nodes}
+    node_subjects = {n['id']: n['subject'] for n in nodes}
+
+    # Fetch all dependencies: prereq → dependent (learning order)
+    deps = db.execute('''
+        SELECT prerequisite_node_id, node_id
+        FROM knowledge_dependency
+    ''').fetchall()
+
+    # Build adjacency: prereq → set(dependents)
+    adjacency = {}
+    for d in deps:
+        src = d['prerequisite_node_id']
+        tgt = d['node_id']
+        adjacency.setdefault(src, set()).add(tgt)
+
+    # Ensure all nodes appear (even isolated ones)
+    for n in nodes:
+        if n['id'] not in adjacency:
+            adjacency[n['id']] = set()
+
+    from practice.graph.cpm import compute_critical_path
+    result = compute_critical_path(
+        adjacency, node_masteries, node_names,
+        mastery_threshold=threshold, hours_per_unit=hours_per_unit,
+    )
+
+    # Attach subject info
+    for item in result['critical_path']:
+        item['subject'] = node_subjects.get(item['node_id'], '')
+    for item in result['all_nodes']:
+        item['subject'] = node_subjects.get(item['node_id'], '')
+
+    result['settings'] = {
+        'mastery_threshold': threshold,
+        'hours_per_unit': hours_per_unit,
+    }
+
+    return jsonify(result)
