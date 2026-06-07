@@ -3,3 +3,5 @@ __pycache__/
 practice.db
 practice_uploads/
 .venv/
+practice.db-shm
+practice.db-wal
