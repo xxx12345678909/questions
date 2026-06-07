@@ -821,3 +821,116 @@ def session_update():
         })
     except Exception as e:
         return jsonify({'error': f'会话更新失败: {str(e)}'}), 500
+
+
+# ================================================================
+# Daily / Weekly Report
+# ================================================================
+
+@recommend_bp.route('/api/report/daily', methods=['GET'])
+def daily_report():
+    """Today's study report: stats, subject breakdown, weakest nodes."""
+    db = get_db()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    today = now.strftime('%Y-%m-%d')
+
+    # Today's answers
+    today_stats = db.execute('''
+        SELECT COUNT(*) as cnt,
+               SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) as correct,
+               SUM(time_spent) as total_sec,
+               AVG(time_spent) as avg_sec
+        FROM answer_records
+        WHERE DATE(created_at) = DATE('now')
+    ''').fetchone()
+
+    today_cnt = today_stats['cnt'] or 0
+    today_correct = today_stats['correct'] or 0
+    today_accuracy = round(today_correct / today_cnt * 100, 1) if today_cnt > 0 else 0
+    today_minutes = round((today_stats['total_sec'] or 0) / 60.0, 1)
+
+    # This week's daily counts (last 7 days)
+    week_daily = db.execute('''
+        SELECT DATE(created_at) as day, COUNT(*) as cnt,
+               SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) as correct
+        FROM answer_records
+        WHERE created_at >= DATE('now', '-6 days')
+        GROUP BY DATE(created_at)
+        ORDER BY day
+    ''').fetchall()
+
+    week_data = {}
+    for r in week_daily:
+        week_data[r['day']] = {'cnt': r['cnt'], 'correct': r['correct']}
+
+    # Fill in missing days
+    from datetime import timedelta
+    days = []
+    for i in range(6, -1, -1):
+        d = (now - timedelta(days=i)).strftime('%Y-%m-%d')
+        wd = week_data.get(d, {'cnt': 0, 'correct': 0})
+        days.append({
+            'date': d,
+            'cnt': wd['cnt'],
+            'correct': wd['correct'],
+            'is_today': d == today,
+        })
+
+    # Weakest knowledge nodes (by mastery)
+    weak_nodes = db.execute('''
+        SELECT id, name, subject, current_mastery as mastery, rolling_accuracy as accuracy
+        FROM knowledge_nodes
+        ORDER BY COALESCE(current_mastery, 0) ASC
+        LIMIT 5
+    ''').fetchall()
+
+    # Subject breakdown
+    subjects = db.execute('''
+        SELECT q.subject,
+               COUNT(DISTINCT q.id) as total_q,
+               COUNT(DISTINCT ar.id) as answered,
+               AVG(s.accuracy) as avg_acc,
+               AVG(s.lambda_) as avg_lambda
+        FROM questions q
+        LEFT JOIN user_question_state s ON q.id = s.question_id
+        LEFT JOIN answer_records ar ON ar.question_id = q.id
+        WHERE q.subject != ''
+        GROUP BY q.subject
+    ''').fetchall()
+
+    # Total questions answered ever
+    total_answered = db.execute(
+        'SELECT COUNT(DISTINCT question_id) FROM answer_records'
+    ).fetchone()[0]
+
+    total_questions = db.execute('SELECT COUNT(*) FROM questions').fetchone()[0]
+
+    return jsonify({
+        'today': {
+            'date': today,
+            'answered': today_cnt,
+            'correct': today_correct,
+            'accuracy': today_accuracy,
+            'minutes': today_minutes,
+        },
+        'week': days,
+        'weak_nodes': [{
+            'id': n['id'],
+            'name': n['name'],
+            'subject': n['subject'],
+            'mastery': round(n['mastery'] or 0, 2),
+            'accuracy': round(n['accuracy'] or 0, 2),
+        } for n in weak_nodes],
+        'subjects': [{
+            'subject': s['subject'],
+            'total': s['total_q'],
+            'answered': s['answered'],
+            'accuracy': round(s['avg_acc'] or 0, 2),
+            'lambda': round(s['avg_lambda'] or 0.3, 2),
+        } for s in subjects],
+        'overview': {
+            'total_questions': total_questions,
+            'total_answered': total_answered,
+            'coverage': round(total_answered / total_questions * 100, 1) if total_questions > 0 else 0,
+        },
+    })

@@ -576,6 +576,8 @@ function backToDashboard() {
         loadRecommendations();
     } else if (state.activeTab === 'wrong') {
         loadWrongReinforce();
+    } else if (state.activeTab === 'report') {
+        loadDailyReport();
     } else if (state.activeTab === 'bank') {
         loadBank();
     }

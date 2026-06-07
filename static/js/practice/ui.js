@@ -8,6 +8,7 @@ function switchTab(tabName) {
     if (tabName === 'bank') loadBank();
     if (tabName === 'unattributed') loadUnattributed();
     if (tabName === 'wrong') loadWrongReinforce();
+    if (tabName === 'report') loadDailyReport();
 }
 
 /* ---- Pagination ---- */

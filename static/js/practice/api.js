@@ -1307,3 +1307,92 @@ function renderWrongList(data) {
         });
     });
 }
+
+/* ---- Daily Report ---- */
+async function loadDailyReport() {
+    const el = document.getElementById('reportContent');
+    if (!el) return;
+    el.innerHTML = '<div class=\"empty-hint\">加载中...</div>';
+
+    try {
+        const r = await fetch('/practice/api/report/daily');
+        const d = await r.json();
+        renderDailyReport(d);
+    } catch (e) {
+        el.innerHTML = '<div class=\"empty-hint\">加载失败: ' + e.message + '</div>';
+    }
+}
+
+function renderDailyReport(data) {
+    const el = document.getElementById('reportContent');
+    const t = data.today;
+
+    // --- Overview Cards ---
+    let html = '<div style=\"display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap\">';
+    html += _reportCard('今日答题', t.answered + ' 题', '#4f46e5');
+    html += _reportCard('正确率', t.accuracy + '%', t.accuracy >= 70 ? '#16a34a' : '#dc2626');
+    html += _reportCard('学习时长', t.minutes + ' 分钟', '#d97706');
+    html += _reportCard('题库覆盖', data.overview.coverage + '%', '#0891b2');
+    html += '</div>';
+
+    // --- Weekly Bar Chart ---
+    const maxCnt = Math.max(1, ...data.week.map(d => d.cnt));
+    html += '<h4 style=\"margin-bottom:8px\">📅 近 7 天答题量</h4>';
+    html += '<div style=\"display:flex;align-items:flex-end;gap:6px;height:120px;margin-bottom:20px;padding:0 4px\">';
+    for (const day of data.week) {
+        const h = Math.max(4, (day.cnt / maxCnt) * 100);
+        const isToday = day.is_today;
+        html += `<div style=\"flex:1;display:flex;flex-direction:column;align-items:center;gap:4px\">
+            <span style=\"font-size:11px;font-weight:${isToday ? 700 : 400};color:${isToday ? '#4f46e5' : 'var(--text-muted)'}\">${day.cnt}</span>
+            <div style=\"width:100%;height:${h}px;background:${isToday ? '#4f46e5' : '#e0e7ff'};border-radius:4px 4px 0 0;min-width:20px\" title=\"${day.date}: ${day.cnt}题\"></div>
+            <span style=\"font-size:10px;color:var(--text-muted);white-space:nowrap\">${day.date.slice(5)}</span>
+        </div>`;
+    }
+    html += '</div>';
+
+    // --- Weak Nodes ---
+    if (data.weak_nodes.length > 0) {
+        html += '<h4 style=\"margin-bottom:8px\">⚠️ 薄弱知识点</h4>';
+        html += '<div style=\"display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px\">';
+        for (const n of data.weak_nodes) {
+            const color = n.mastery < 0.3 ? '#dc2626' : n.mastery < 0.5 ? '#d97706' : '#0891b2';
+            html += `<div style=\"flex:1;min-width:140px;border:1px solid var(--border);border-radius:8px;padding:10px\">
+                <div style=\"font-weight:600;font-size:13px\">${escapeHtml(n.name)}</div>
+                <div style=\"font-size:11px;color:var(--text-muted)\">${escapeHtml(n.subject)}</div>
+                <div style=\"margin-top:6px;display:flex;align-items:center;gap:6px\">
+                    <div style=\"flex:1;height:6px;background:#e5e7eb;border-radius:3px\">
+                        <div style=\"width:${n.mastery * 100}%;height:100%;background:${color};border-radius:3px\"></div>
+                    </div>
+                    <span style=\"font-size:12px;font-weight:600;color:${color}\">${Math.round(n.mastery * 100)}%</span>
+                </div>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // --- Subject Breakdown ---
+    if (data.subjects.length > 0) {
+        html += '<h4 style=\"margin-bottom:8px\">📚 科目掌握度</h4>';
+        html += '<table style=\"width:100%;border-collapse:collapse\"><thead><tr style=\"text-align:left;border-bottom:2px solid var(--border)\">';
+        html += '<th style=\"padding:6px 8px;font-size:12px\">科目</th><th style=\"padding:6px 8px;font-size:12px\">题目</th><th style=\"padding:6px 8px;font-size:12px\">已答</th><th style=\"padding:6px 8px;font-size:12px\">正确率</th><th style=\"padding:6px 8px;font-size:12px\">遗忘率</th></tr></thead><tbody>';
+        for (const s of data.subjects) {
+            html += `<tr style=\"border-bottom:1px solid var(--border);font-size:13px\">
+                <td style=\"padding:6px 8px;font-weight:600\">${escapeHtml(s.subject)}</td>
+                <td style=\"padding:6px 8px\">${s.total}</td>
+                <td style=\"padding:6px 8px\">${s.answered}</td>
+                <td style=\"padding:6px 8px;color:${s.accuracy >= 0.7 ? '#16a34a' : '#dc2626'}\">${Math.round(s.accuracy * 100)}%</td>
+                <td style=\"padding:6px 8px\">${s.lambda.toFixed(2)}</td>
+            </tr>`;
+        }
+        html += '</tbody></table>';
+    }
+
+    el.innerHTML = html;
+}
+
+function _reportCard(label, value, color) {
+    return `<div style=\"flex:1;min-width:100px;background:${color}10;border:1px solid ${color}30;border-radius:8px;padding:12px;text-align:center\">
+        <div style=\"font-size:20px;font-weight:700;color:${color}\">${value}</div>
+        <div style=\"font-size:11px;color:var(--text-muted);margin-top:2px\">${label}</div>
+    </div>`;
+}

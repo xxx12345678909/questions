@@ -113,6 +113,12 @@ class _MySQLConnection:
         sql = _re.sub(r'\bRANDOM\s*\(\s*\)', 'RAND()', sql)
         # DATE('now') is SQLite; MySQL uses CURDATE()
         sql = _re.sub(r"\bDATE\s*\(\s*'now'\s*\)", 'CURDATE()', sql)
+        # DATE('now', '-N days') → DATE_SUB(CURDATE(), INTERVAL N DAY)
+        sql = _re.sub(
+            r"\bDATE\s*\(\s*'now'\s*,\s*'([+-]?\d+)\s*days?'\s*\)",
+            lambda m: f"DATE_SUB(CURDATE(), INTERVAL {abs(int(m.group(1)))} DAY)",
+            sql,
+        )
         # Backtick-quote bare `key` column (MySQL reserved word).
         # Only matches lowercase "key", NOT "PRIMARY KEY"/"FOREIGN KEY",
         # and skips already-quoted `key`.
