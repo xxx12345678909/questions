@@ -299,58 +299,11 @@
                             </span>
                         </div>
                         <div class="graph-toolbar-right">
-                            <span class="text-muted">拖拽节点移动 · 滚轮缩放 · 右键节点查看路径</span>
+                            <span class="text-muted">Ctrl+点击连线 | Shift+编辑 | 右键节点/连线/空白 | 双击路径</span>
                         </div>
                     </div>
-                    <div class="graph-main">
-                        <div class="graph-canvas-container">
-                            <div id="knowledgeGraph" style="width:100%;height:100%"></div>
-                        </div>
-                        <div class="graph-sidebar" id="graphSidebar">
-                            <div class="graph-sidebar-section">
-                                <h4>新建知识点</h4>
-                                <div class="node-creator">
-                                    <input type="text" id="newNodeName" class="graph-input" placeholder="知识点名称">
-                                    <select id="newNodeSubject" class="graph-select">
-                                        <option value="">选择科目</option>
-                                        <option value="高数">高数</option>
-                                        <option value="线代">线代</option>
-                                        <option value="408">408</option>
-                                        <option value="英语">英语</option>
-                                        <option value="概率">概率</option>
-                                        <option value="算法">算法</option>
-                                        <option value="数学">数学</option>
-                                        <option value="政治">政治</option>
-                                    </select>
-                                    <button class="btn-sm btn-primary" id="btnCreateNode" style="width:100%">创建知识点</button>
-                                </div>
-                            </div>
-                            <div class="graph-sidebar-section">
-                                <h4>依赖编辑</h4>
-                                <div class="edge-editor">
-                                    <p style="font-size:11px;color:#64748b;margin:0 0 4px">A 依赖于 B 的前置知识</p>
-                                    <select id="edgeSource" class="graph-select">
-                                        <option value="">A: 被依赖的节点</option>
-                                    </select>
-                                    <span style="text-align:center;font-size:12px;color:#94a3b8">↑ 需要先掌握 ↓</span>
-                                    <select id="edgeTarget" class="graph-select">
-                                        <option value="">B: 前置知识点</option>
-                                    </select>
-                                    <div class="edge-actions">
-                                        <button class="btn-sm btn-primary" id="btnAddEdge">添加依赖</button>
-                                        <button class="btn-sm btn-danger-outline" id="btnRemoveEdge">删除依赖</button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="graph-sidebar-section">
-                                <h4>知识点详情</h4>
-                                <div id="nodeDetail" class="node-detail-empty">点击节点查看详情</div>
-                            </div>
-                            <div class="graph-sidebar-section">
-                                <h4>学习路径</h4>
-                                <div id="pathResult" class="path-result-empty">右键节点规划复习路径</div>
-                            </div>
-                        </div>
+                    <div class="graph-main" style="display:block;min-height:450px;max-height:55vh">
+                        <div id="knowledgeGraph" style="width:100%;height:450px"></div>
                     </div>
                     <!-- CPM Critical Path -->
                     <div class="card" style="margin-top:12px">

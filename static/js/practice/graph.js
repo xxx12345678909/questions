@@ -70,7 +70,6 @@
                 }, true);
 
                 this._bindEvents();
-                populateNodeSelects(data.nodes);
 
             } catch (err) {
                 console.error('Graph refresh error:', err);
@@ -82,14 +81,50 @@
             this.chart.off('click');
             this.chart.off('dblclick');
             this.chart.off('contextmenu');
+            this.chart.off('mousedown');
+            this.chart.off('mouseup');
+            this.chart.off('mousemove');
 
             this.chart.on('click', 'series', p => {
+                if (p.dataType === 'edge') {
+                    self._clearConnectMode();
+                    self._showEdgeContext(p.data);
+                    return;
+                }
+                if (p.dataType !== 'node') {
+                    self._clearConnectMode();
+                    return;
+                }
+                // Ctrl+click = connect mode: select source, then click target
+                if (p.event.event?.ctrlKey || p.event.event?.metaKey) {
+                    if (self._connectSource && self._connectSource.id === p.data.id) {
+                        self._clearConnectMode();
+                        return;
+                    }
+                    if (self._connectSource) {
+                        // Click second node = create edge
+                        createEdgeFromNodes(self._connectSource.id, p.data.id);
+                        self._clearConnectMode();
+                        return;
+                    }
+                    // First node = select source
+                    self._connectSource = p.data;
+                    self._highlightNode(p.data.id, '#f59e0b', 4);
+                    showToast('已选中「' + (p.data.label || p.data.name) + '」为起点，Ctrl+点击目标节点创建连线（Esc 取消）');
+                    return;
+                }
                 // Shift+click = quick edit node
-                if (p.dataType === 'node' && p.event.event?.shiftKey) {
+                if (p.event.event?.shiftKey) {
                     openNodeEditor(p.data);
                     return;
                 }
-                if (p.dataType === 'node') self._showNodeDetail(p.data);
+                if (self._connectSource) {
+                    // In connect mode, any node click = target
+                    createEdgeFromNodes(self._connectSource.id, p.data.id);
+                    self._clearConnectMode();
+                    return;
+                }
+                self._showNodeDetail(p.data);
                 self._hideCtxMenu();
             });
 
@@ -97,45 +132,105 @@
                 if (p.dataType === 'node') self._loadLearningPath(p.data);
             });
 
-            // Right-click context menu
+            // Right-click context menu (node, edge, or canvas)
             this.chart.on('contextmenu', 'series', p => {
                 p.event.event.preventDefault();
-                if (p.dataType === 'node') self._showContextMenu(p.data, p.event.event);
+                self._ctxMenuJustHandled = true;  // suppress DOM canvas handler
+                if (p.dataType === 'node') {
+                    self._showNodeContextMenu(p.data, p.event.event);
+                } else if (p.dataType === 'edge') {
+                    self._showEdgeContextMenu(p.data, p.event.event);
+                }
             });
+            // Right-click on empty canvas = add node
+            // Remove old DOM listener first to avoid stacking on refreshGraph
+            if (self._canvasCtxHandler) {
+                this.chart.getDom().removeEventListener('contextmenu', self._canvasCtxHandler);
+            }
+            self._canvasCtxHandler = e => {
+                if (self._ctxMenuJustHandled) {
+                    self._ctxMenuJustHandled = false;
+                    return;
+                }
+                e.preventDefault();
+                self._showCanvasContextMenu(e);
+            };
+            this.chart.getDom().addEventListener('contextmenu', self._canvasCtxHandler);
 
-            // Click elsewhere closes menu
-            this.chart.getDom().addEventListener('click', () => self._hideCtxMenu());
-            document.addEventListener('click', e => {
+            // Click empty space or Escape = cancel connect mode
+            if (self._docClickHandler) {
+                document.removeEventListener('click', self._docClickHandler);
+            }
+            self._docClickHandler = e => {
                 if (!e.target.closest('.graph-ctx-menu')) self._hideCtxMenu();
-            });
+            };
+            document.addEventListener('click', self._docClickHandler);
+            if (self._docKeyHandler) {
+                document.removeEventListener('keydown', self._docKeyHandler);
+            }
+            self._docKeyHandler = e => {
+                if (e.key === 'Escape') self._clearConnectMode();
+            };
+            document.addEventListener('keydown', self._docKeyHandler);
         }
 
-        _showContextMenu(nodeData, evt) {
+        _showNodeContextMenu(nodeData, evt) {
             this._hideCtxMenu();
-            this._ctxNode = nodeData;
+            openNodeEditor(nodeData);  // directly open edit popup
+        }
 
+        _hideCtxMenu() {
+            if (this._ctxMenu) { this._ctxMenu.remove(); this._ctxMenu = null; }
+        }
+
+        _showEdgeContextMenu(edgeData, evt) {
+            this._hideCtxMenu();
+
+            let srcName = edgeData.source_label || '#' + edgeData.source;
+            let tgtName = edgeData.target_label || '#' + edgeData.target;
+            if (this.graphData) {
+                const s = this.graphData.nodes.find(n => n.id === edgeData.source);
+                const t = this.graphData.nodes.find(n => n.id === edgeData.target);
+                if (s) srcName = s.label || s.name;
+                if (t) tgtName = t.label || t.name;
+            }
+
+            const menu = this._buildMenu(evt, [
+                { label: srcName + ' → ' + tgtName, action: null, disabled: true },
+                { label: '—', action: null },
+                { label: '🔄 翻转连线方向', action: () => reverseEdge(edgeData.source, edgeData.target) },
+                { label: '🗑️ 删除连线', action: () => removeEdgeByIds(edgeData.source, edgeData.target), cls: 'danger' },
+            ]);
+            document.body.appendChild(menu);
+            this._ctxMenu = menu;
+        }
+
+        _showCanvasContextMenu(evt) {
+            this._hideCtxMenu();
+            const menu = this._buildMenu(evt, [
+                { label: '➕ 添加知识点', action: () => openCreateNodeModal() },
+            ]);
+            document.body.appendChild(menu);
+            this._ctxMenu = menu;
+        }
+
+        _buildMenu(evt, items) {
             const menu = document.createElement('div');
             menu.className = 'graph-ctx-menu';
             menu.style.cssText = `position:fixed;left:${evt.clientX}px;top:${evt.clientY}px;z-index:9999;
                 background:#1e293b;border:1px solid #334155;border-radius:8px;padding:4px 0;
-                min-width:160px;box-shadow:0 8px 24px rgba(0,0,0,0.4);font-size:13px`;
-
-            const items = [
-                { label: '✏️ 编辑节点', action: () => openNodeEditor(nodeData) },
-                { label: '🔗 设为此节点前置', action: () => {
-                    document.getElementById('edgeSource').value = nodeData.id;
-                    showToast('已选中 ' + (nodeData.label || nodeData.name) + ' 为前置节点，请在右侧选择目标节点');
-                }},
-                { label: '📍 查看学习路径', action: () => this._loadLearningPath(nodeData) },
-                { label: '—', action: null },
-                { label: '🗑️ 删除节点', action: () => deleteNode(nodeData), cls: 'danger' },
-            ];
+                min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,0.4);font-size:13px`;
 
             items.forEach(it => {
                 if (it.label === '—') {
                     const sep = document.createElement('div');
                     sep.style.cssText = 'border-top:1px solid #334155;margin:4px 0';
                     menu.appendChild(sep);
+                } else if (it.disabled) {
+                    const el = document.createElement('div');
+                    el.textContent = it.label;
+                    el.style.cssText = 'padding:6px 14px;color:#94a3b8;font-size:11px';
+                    menu.appendChild(el);
                 } else {
                     const btn = document.createElement('button');
                     btn.textContent = it.label;
@@ -148,13 +243,71 @@
                     menu.appendChild(btn);
                 }
             });
+            return menu;
+        }
+
+        _highlightNode(nodeId, color, borderWidth) {
+            if (!this.chart || !this.graphData) return;
+            const nodes = this.graphData.nodes.map(n => ({
+                ...n,
+                symbolSize: Math.max(25, Math.min(60, 25 + (n.mastery || 0) * 35)),
+                label: { show: true, fontSize: 11, formatter: n.label || n.name },
+                itemStyle: (n.id === nodeId)
+                    ? { borderColor: color, borderWidth: borderWidth, color: color + '20' }
+                    : n.itemStyle || {},
+            }));
+            this.chart.setOption({
+                series: [{ data: nodes }],
+            });
+        }
+
+        _clearConnectMode() {
+            if (this._connectSource) {
+                this._highlightNode(this._connectSource.id, null, 0);
+                this._connectSource = null;
+            }
+        }
+
+        _showEdgeContext(edgeData) {
+            this._hideCtxMenu();
+
+            // Find source/target names from graphData
+            let srcName = edgeData.source_label || 'node#' + edgeData.source;
+            let tgtName = edgeData.target_label || 'node#' + edgeData.target;
+            if (this.graphData) {
+                const srcNode = this.graphData.nodes.find(n => n.id === edgeData.source);
+                const tgtNode = this.graphData.nodes.find(n => n.id === edgeData.target);
+                if (srcNode) srcName = srcNode.label || srcNode.name;
+                if (tgtNode) tgtName = tgtNode.label || tgtNode.name;
+            }
+
+            const menu = document.createElement('div');
+            menu.className = 'graph-ctx-menu';
+            menu.style.cssText = `position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:9999;
+                background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;
+                min-width:240px;box-shadow:0 8px 24px rgba(0,0,0,0.4);font-size:13px;text-align:center`;
+
+            menu.innerHTML = `
+                <div style="color:#94a3b8;font-size:11px;margin-bottom:8px">依赖连线</div>
+                <div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:12px;flex-wrap:wrap">
+                    <span style="background:#1e3a5f;padding:3px 8px;border-radius:4px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(srcName)}</span>
+                    <span style="color:#f59e0b">→</span>
+                    <span style="background:#1e3a5f;padding:3px 8px;border-radius:4px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(tgtName)}</span>
+                </div>
+                <div style="display:flex;gap:8px;justify-content:center">
+                    <button id="btnDeleteEdge" style="padding:6px 16px;background:#dc2626;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px">🗑️ 删除连线</button>
+                    <button id="btnCancelEdge" style="padding:6px 16px;background:#334155;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px">取消</button>
+                </div>
+            `;
 
             document.body.appendChild(menu);
             this._ctxMenu = menu;
-        }
 
-        _hideCtxMenu() {
-            if (this._ctxMenu) { this._ctxMenu.remove(); this._ctxMenu = null; }
+            document.getElementById('btnDeleteEdge').addEventListener('click', async () => {
+                this._hideCtxMenu();
+                await removeEdgeByIds(edgeData.source, edgeData.target);
+            });
+            document.getElementById('btnCancelEdge').addEventListener('click', () => this._hideCtxMenu());
         }
 
         _showNodeDetail(n) {
@@ -267,55 +420,112 @@
         tgt.innerHTML = '<option value="">B: 前置知识点</option>' + opts;
     }
 
-    async function createNode() {
-        const name = document.getElementById('newNodeName')?.value.trim();
-        const subject = document.getElementById('newNodeSubject')?.value;
-        if (!name) { alert('请输入知识点名称'); return; }
-        if (!subject) { alert('请选择科目'); return; }
+    async function createNodeAPI(name, subject) {
         try {
             const r = await fetch('/practice/api/knowledge-nodes', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, subject }),
             });
             const d = await r.json();
-            if (d.error) { alert(d.error); return; }
-            document.getElementById('newNodeName').value = '';
-            document.getElementById('newNodeSubject').value = '';
+            if (d.error) { showToast(d.error, true); return false; }
+            showToast('知识点「' + name + '」已创建');
             engine && engine.refreshGraph();
-        } catch (e) { alert('创建失败: ' + e.message); }
+            return true;
+        } catch (e) { showToast('创建失败: ' + e.message, true); return false; }
     }
 
-    async function addEdge() {
-        const s = document.getElementById('edgeSource')?.value;
-        const t = document.getElementById('edgeTarget')?.value;
-        if (!s || !t) { alert('请选择源和目标知识点'); return; }
-        if (s === t) { alert('节点不能自依赖'); return; }
+    function openCreateNodeModal() {
+        const old = document.getElementById('nodeCreatorOverlay');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'nodeCreatorOverlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9998;display:flex;align-items:center;justify-content:center';
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+        overlay.innerHTML = `
+            <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px;width:360px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,0.5)">
+                <h3 style="margin:0 0 16px;font-size:16px">➕ 新建知识点</h3>
+                <div style="margin-bottom:12px">
+                    <label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">名称</label>
+                    <input id="modalNodeName" placeholder="例如：二叉平衡树旋转"
+                        style="width:100%;padding:8px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:14px;box-sizing:border-box">
+                </div>
+                <div style="margin-bottom:12px">
+                    <label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">科目</label>
+                    <select id="modalNodeSubject" style="width:100%;padding:8px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:14px;box-sizing:border-box">
+                        <option value="">选择科目</option>
+                        ${['高数','线代','408','英语','概率','算法','数学','政治'].map(s => `<option value="${s}">${s}</option>`).join('')}
+                    </select>
+                </div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+                    <button onclick="document.getElementById('nodeCreatorOverlay').remove()"
+                        style="padding:8px 16px;background:#334155;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px">取消</button>
+                    <button onclick="submitCreateNode()"
+                        style="padding:8px 16px;background:#4f46e5;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px">创建</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        setTimeout(() => document.getElementById('modalNodeName')?.focus(), 100);
+    }
+
+    window.submitCreateNode = async function() {
+        const name = document.getElementById('modalNodeName')?.value.trim();
+        const subject = document.getElementById('modalNodeSubject')?.value;
+        if (!name) { alert('请输入知识点名称'); return; }
+        if (!subject) { alert('请选择科目'); return; }
+        const ok = await createNodeAPI(name, subject);
+        if (ok) document.getElementById('nodeCreatorOverlay')?.remove();
+    };
+
+    async function createEdgeFromNodes(sourceId, targetId) {
+        if (sourceId === targetId) { alert('节点不能自依赖'); return; }
         try {
             const r = await fetch('/practice/api/graph/edge/update', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ source_node_id: +s, target_node_id: +t, action: 'add' }),
+                body: JSON.stringify({ source_node_id: sourceId, target_node_id: targetId, action: 'add' }),
             });
             const d = await r.json();
-            if (d.error) { alert(d.error); return; }
-            alert('依赖已添加');
+            if (d.error) { showToast(d.error, true); return; }
+            showToast('连线已创建');
             engine && engine.refreshGraph();
-        } catch (e) { alert('添加失败: ' + e.message); }
+        } catch (e) { showToast('连线失败: ' + e.message, true); }
     }
 
-    async function removeEdge() {
-        const s = document.getElementById('edgeSource')?.value;
-        const t = document.getElementById('edgeTarget')?.value;
-        if (!s || !t) { alert('请选择源和目标知识点'); return; }
+    async function removeEdgeByIds(sourceId, targetId) {
         try {
             const r = await fetch('/practice/api/graph/edge/update', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ source_node_id: +s, target_node_id: +t, action: 'remove' }),
+                body: JSON.stringify({ source_node_id: sourceId, target_node_id: targetId, action: 'remove' }),
             });
             const d = await r.json();
-            if (d.error) { alert(d.error); return; }
-            alert('依赖已删除');
+            if (d.error) { showToast(d.error, true); return; }
+            showToast('连线已删除');
             engine && engine.refreshGraph();
-        } catch (e) { alert('删除失败: ' + e.message); }
+        } catch (e) { showToast('删除失败: ' + e.message, true); }
+    }
+
+    async function reverseEdge(sourceId, targetId) {
+        // Remove old edge, add reversed edge
+        try {
+            const r1 = await fetch('/practice/api/graph/edge/update', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source_node_id: sourceId, target_node_id: targetId, action: 'remove' }),
+            });
+            const d1 = await r1.json();
+            if (d1.error) { showToast('删除旧连线失败: ' + d1.error, true); return; }
+
+            const r2 = await fetch('/practice/api/graph/edge/update', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source_node_id: targetId, target_node_id: sourceId, action: 'add' }),
+            });
+            const d2 = await r2.json();
+            if (d2.error) { showToast('创建反向连线失败: ' + d2.error, true); return; }
+
+            showToast('连线方向已翻转');
+            engine && engine.refreshGraph();
+        } catch (e) { showToast('翻转失败: ' + e.message, true); }
     }
 
     // ---- 节点编辑模态框 ----
@@ -335,7 +545,7 @@
                 <h3 style="margin:0 0 16px;font-size:16px">✏️ 编辑知识点</h3>
                 <div style="margin-bottom:12px">
                     <label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">名称</label>
-                    <input id="editNodeName" value="${escapeHtml(nodeData.label || nodeData.name || '')}"
+                    <input id="editNodeName" value="${escapeHtml(nodeData.name || '')}"
                         style="width:100%;padding:8px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:14px;box-sizing:border-box">
                 </div>
                 <div style="margin-bottom:12px">
@@ -345,11 +555,15 @@
                         ${['高数','线代','408','英语','概率','算法','数学','政治'].map(s => `<option value="${s}" ${(nodeData.category||'') === s ? 'selected' : ''}>${s}</option>`).join('')}
                     </select>
                 </div>
-                <div class="node-edit-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-                    <button onclick="document.getElementById('nodeEditorOverlay').remove()"
-                        style="padding:8px 16px;background:#334155;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px">取消</button>
-                    <button onclick="saveNodeEdit(${nodeData.id})"
-                        style="padding:8px 16px;background:#4f46e5;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px">保存</button>
+                <div class="node-edit-actions" style="display:flex;gap:8px;justify-content:space-between;margin-top:16px">
+                    <button onclick="deleteNodeById(${nodeData.id})"
+                        style="padding:8px 16px;background:#dc2626;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px">🗑️ 删除</button>
+                    <div style="display:flex;gap:8px">
+                        <button onclick="document.getElementById('nodeEditorOverlay').remove()"
+                            style="padding:8px 16px;background:#334155;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px">取消</button>
+                        <button onclick="saveNodeEdit(${nodeData.id})"
+                            style="padding:8px 16px;background:#4f46e5;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px">保存</button>
+                    </div>
                 </div>
             </div>
         `;
@@ -373,6 +587,18 @@
         } catch (e) { alert('更新失败: ' + e.message); }
     };
 
+    async function deleteNodeById(nodeId) {
+        // Called from edit modal — needs name for confirm
+        try {
+            const r = await fetch('/practice/api/knowledge-nodes/' + nodeId, { method: 'DELETE' });
+            const d = await r.json();
+            if (d.error) { showToast(d.error, true); return; }
+            document.getElementById('nodeEditorOverlay')?.remove();
+            showToast('知识点已删除');
+            engine && engine.refreshGraph();
+        } catch (e) { showToast('删除失败: ' + e.message, true); }
+    }
+
     async function deleteNode(nodeData) {
         if (!confirm('确定删除知识点「' + (nodeData.label || nodeData.name) + '」？关联的题目映射和依赖也会被清除。')) return;
         try {
@@ -388,9 +614,7 @@
 
     document.getElementById('btnRefreshGraph')?.addEventListener('click', () => { engine && engine.refreshGraph(); });
     document.getElementById('btnFitGraph')?.addEventListener('click', () => { if (engine) engine.chart.dispatchAction({ type: 'restore' }); });
-    document.getElementById('btnCreateNode')?.addEventListener('click', createNode);
-    document.getElementById('btnAddEdge')?.addEventListener('click', addEdge);
-    document.getElementById('btnRemoveEdge')?.addEventListener('click', removeEdge);
+    document.getElementById('btnCreateNode')?.addEventListener('click', openCreateNodeModal);
     document.getElementById('btnCpmCompute')?.addEventListener('click', computeCpm);
 
     const _orig = window.switchTab;
