@@ -113,6 +113,74 @@ def recommend_advanced():
 # Answer submission
 # ----------------------------------------------------------------
 
+@recommend_bp.route('/api/recommend/wrong-reinforce', methods=['GET'])
+def wrong_reinforce():
+    """
+    Wrong-question reinforcement pool.
+    Questions with times_wrong >= 2 that haven't yet achieved 3 consecutive correct.
+    Sorted by forgetting-curve priority (most urgent first).
+    """
+    db = get_db()
+    threshold = request.args.get('wrong_threshold', type=int, default=2)
+    grad_threshold = request.args.get('graduate_threshold', type=int, default=3)
+    limit = request.args.get('limit', type=int, default=30)
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    from practice.core.ebbinghaus import calc_score
+
+    rows = db.execute('''
+        SELECT q.id, q.content, q.answer, q.subject, q.type, q.difficulty,
+               q.avg_cost, q.content_type, q.image_path, q.answer_image_path, q.source,
+               s.lambda_, s.last_review, s.times_correct, s.times_wrong,
+               COALESCE(s.consecutive_correct, 0) as consecutive_correct
+        FROM questions q
+        LEFT JOIN user_question_state s ON q.id = s.question_id
+        WHERE s.times_wrong >= ?
+          AND COALESCE(s.consecutive_correct, 0) < ?
+    ''', (threshold, grad_threshold)).fetchall()
+
+    questions = []
+    for row in rows:
+        lambda_ = row['lambda_'] if row['lambda_'] is not None else 0.3
+        times_wrong = row['times_wrong'] if row['times_wrong'] is not None else 0
+        subject = row['subject'] or ''
+        avg_cost = row['avg_cost']
+
+        score, priority, retention = calc_score(
+            lambda_, row['last_review'], subject, times_wrong, avg_cost, now
+        )
+
+        questions.append({
+            'id': row['id'],
+            'content': row['content'],
+            'answer': row['answer'],
+            'subject': subject,
+            'type': row['type'] or '',
+            'difficulty': row['difficulty'],
+            'avg_cost': row['avg_cost'],
+            'source': row['source'] or '',
+            'content_type': row['content_type'] or 'text',
+            'image_url': f"/practice/uploads/{row['image_path']}" if row['image_path'] else '',
+            'answer_image_url': f"/practice/uploads/{row['answer_image_path']}" if row['answer_image_path'] else '',
+            'times_wrong': times_wrong,
+            'consecutive_correct': row['consecutive_correct'],
+            'retention': round(retention, 4),
+            'priority': round(priority, 4),
+            'score': round(score, 4),
+        })
+
+    questions.sort(key=lambda x: x['score'], reverse=True)
+    result = questions[:limit]
+
+    return jsonify({
+        'questions': result,
+        'total': len(result),
+        'pool_size': len(questions),
+        'threshold': threshold,
+        'graduate_threshold': grad_threshold,
+    })
+
+
 @recommend_bp.route('/api/answer', methods=['POST'])
 def submit_answer():
     db = get_db()
@@ -280,6 +348,16 @@ def _execute_answer_writes(db, p):
             db.execute(
                 'INSERT INTO answer_records (question_id,time_spent,is_correct,strokes,session_id,user_theta_snapshot,irt_theta_snapshot) VALUES (?,?,?,?,?,?,?)',
                 (qid, p["time_spent"], 1 if is_c else 0, strokes, None, None, None))
+
+            # Track consecutive correct for wrong-question reinforcement
+            if is_c:
+                db.execute(
+                    'UPDATE user_question_state SET consecutive_correct = COALESCE(consecutive_correct, 0) + 1 WHERE question_id = ?',
+                    (qid,))
+            else:
+                db.execute(
+                    'UPDATE user_question_state SET consecutive_correct = 0 WHERE question_id = ?',
+                    (qid,))
 
             db.commit()
 

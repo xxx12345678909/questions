@@ -66,6 +66,8 @@ function bindEvents() {
     dom.btnRandom.addEventListener('click', () => randomQuestion());
     dom.btnSettings.addEventListener('click', openSettings);
     dom.btnResetQuestions.addEventListener('click', resetAllQuestions);
+    const btnWrong = document.getElementById('btnLoadWrong');
+    if (btnWrong) btnWrong.addEventListener('click', () => loadWrongReinforce());
 
     // Tabs
     document.querySelectorAll('.tab').forEach(tab => {
@@ -572,6 +574,8 @@ function backToDashboard() {
     // 刷新当前活跃标签页数据，确保预估时间等字段反映最新状态
     if (state.activeTab === 'recommend' && state.recommendations.length > 0) {
         loadRecommendations();
+    } else if (state.activeTab === 'wrong') {
+        loadWrongReinforce();
     } else if (state.activeTab === 'bank') {
         loadBank();
     }

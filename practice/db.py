@@ -111,6 +111,8 @@ class _MySQLConnection:
         # ORDER BY RANDOM() is SQLite; MySQL uses RAND()
         import re as _re
         sql = _re.sub(r'\bRANDOM\s*\(\s*\)', 'RAND()', sql)
+        # DATE('now') is SQLite; MySQL uses CURDATE()
+        sql = _re.sub(r"\bDATE\s*\(\s*'now'\s*\)", 'CURDATE()', sql)
         # Backtick-quote bare `key` column (MySQL reserved word).
         # Only matches lowercase "key", NOT "PRIMARY KEY"/"FOREIGN KEY",
         # and skips already-quoted `key`.
@@ -248,6 +250,7 @@ _SQLITE_DDL = '''
         question_id INTEGER PRIMARY KEY, lambda_ REAL DEFAULT 0.3,
         last_review TEXT NOT NULL DEFAULT '', accuracy REAL DEFAULT 0.0,
         times_correct INTEGER DEFAULT 0, times_wrong INTEGER DEFAULT 0,
+        consecutive_correct INTEGER DEFAULT 0,
         FOREIGN KEY (question_id) REFERENCES questions(id)
     );
     CREATE TABLE IF NOT EXISTS answer_records (
@@ -354,6 +357,7 @@ def _init_mysql_schema():
             question_id INTEGER PRIMARY KEY, lambda_ DOUBLE DEFAULT 0.3,
             last_review VARCHAR(64) NOT NULL DEFAULT '', accuracy DOUBLE DEFAULT 0.0,
             times_correct INTEGER DEFAULT 0, times_wrong INTEGER DEFAULT 0,
+            consecutive_correct INTEGER DEFAULT 0,
             FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
         ) ENGINE=InnoDB""",
         """CREATE TABLE IF NOT EXISTS answer_records (
@@ -440,10 +444,27 @@ else:
         db = sqlite3.connect(DATABASE)
         # v3-v6 were already handled in the unified CREATE above via IF NOT EXISTS
         db.execute("UPDATE questions SET irt_b = 6.0 * difficulty - 3.0 WHERE irt_b = 0.0 OR irt_b IS NULL")
+        # v7: consecutive_correct for wrong-question reinforcement mode
+        try:
+            db.execute("ALTER TABLE user_question_state ADD COLUMN consecutive_correct INTEGER DEFAULT 0")
+        except Exception:
+            pass  # column already exists
         db.commit()
         db.close()
     except Exception:
         pass
+
+    # MySQL migration: consecutive_correct column (safe to re-run)
+    if DB_TYPE == "mysql":
+        try:
+            mig_conn = _create_mysql_conn()
+            mig_conn.execute(
+                "ALTER TABLE user_question_state ADD COLUMN consecutive_correct INTEGER DEFAULT 0"
+            )
+            mig_conn.commit()
+            mig_conn.close()
+        except Exception:
+            pass  # column already exists
 
 
 # ================================================================

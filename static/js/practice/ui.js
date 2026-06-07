@@ -7,6 +7,7 @@ function switchTab(tabName) {
     document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab${tabName.charAt(0).toUpperCase() + tabName.slice(1)}`));
     if (tabName === 'bank') loadBank();
     if (tabName === 'unattributed') loadUnattributed();
+    if (tabName === 'wrong') loadWrongReinforce();
 }
 
 /* ---- Pagination ---- */

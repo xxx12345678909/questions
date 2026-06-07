@@ -72,6 +72,7 @@
                 <!-- Tabs -->
                 <div class="tabs">
                     <button class="tab active" data-tab="recommend">今日推荐</button>
+                    <button class="tab" data-tab="wrong">错题强化</button>
                     <button class="tab" data-tab="bank">题库管理</button>
                     <button class="tab" data-tab="upload">上传PDF</button>
                     <button class="tab" data-tab="graph">知识图谱</button>
@@ -90,6 +91,26 @@
                             <div class="recommend-breakdown" id="recommendBreakdown"></div>
                             <div class="question-list" id="recommendList">
                                 <div class="empty-hint">点击「今日推荐」获取个性化题目列表</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Wrong Reinforcement Tab -->
+                <div class="tab-content" id="tabWrong">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>🔁 错题强化</h3>
+                            <span class="badge" id="wrongCount">0题</span>
+                            <button class="btn-sm btn-primary" id="btnLoadWrong" style="margin-left:12px">加载错题</button>
+                        </div>
+                        <div class="card-body">
+                            <div style="margin-bottom:12px;color:var(--text-muted);font-size:13px">
+                                <span>错题池：答错 ≥ 2 次且未连续正确 3 次的题目</span>
+                                <span style="margin-left:16px" id="wrongPoolInfo"></span>
+                            </div>
+                            <div class="question-list" id="wrongList">
+                                <div class="empty-hint">点击「加载错题」获取需要强化的题目</div>
                             </div>
                         </div>
                     </div>

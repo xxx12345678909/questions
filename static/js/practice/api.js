@@ -1251,3 +1251,59 @@ async function updateSession(questionId, timeSpentMin) {
         if (typeof pollFatigue === 'function') pollFatigue();
     } catch (_) {}
 }
+
+/* ---- Wrong Reinforcement Mode ---- */
+async function loadWrongReinforce() {
+    const list = document.getElementById('wrongList');
+    const badge = document.getElementById('wrongCount');
+    const info = document.getElementById('wrongPoolInfo');
+    if (!list) return;
+
+    list.innerHTML = '<div class=\"empty-hint\">加载中...</div>';
+
+    try {
+        const r = await fetch('/practice/api/recommend/wrong-reinforce?limit=30');
+        const data = await r.json();
+
+        badge.textContent = data.total + '题';
+        info.textContent = '池中共 ' + data.pool_size + ' 题 | 错 ≥ ' + data.threshold + ' 次 → 连续正确 ' + data.graduate_threshold + ' 次毕业';
+
+        if (data.total === 0) {
+            list.innerHTML = '<div class=\"empty-hint\">🎉 没有需要强化的错题！</div>';
+            return;
+        }
+
+        state.wrongQuestions = data.questions;
+        renderWrongList(data);
+    } catch (e) {
+        list.innerHTML = '<div class=\"empty-hint\">加载失败: ' + e.message + '</div>';
+    }
+}
+
+function renderWrongList(data) {
+    const list = document.getElementById('wrongList');
+    list.innerHTML = data.questions.map((q, i) => `
+        <div class=\"question-item\" data-index=\"${i}\">
+            <div class=\"question-item-left\">
+                <div class=\"question-item-title\">${i + 1}. ${q.content_type === 'image' ? '🖼 ' : ''}${escapeHtml((q.content || '(图片题目)').substring(0, 80))}${(q.content || '').length > 80 ? '...' : ''}</div>
+                <div class=\"question-item-meta\">
+                    <span>${q.subject || '-'}</span>
+                    <span>${q.type || '-'}</span>
+                    <span>答错${q.times_wrong}次</span>
+                    <span>连续✓${q.consecutive_correct}/3</span>
+                    <span>得分 ${q.score.toFixed(1)}</span>
+                </div>
+            </div>
+        </div>
+    `).join('');
+
+    list.querySelectorAll('.question-item').forEach(el => {
+        el.addEventListener('click', () => {
+            const idx = parseInt(el.dataset.index);
+            // Piggyback on recommend flow for next/prev navigation
+            state.recommendations = state.wrongQuestions;
+            state.recommendationIndex = idx;
+            startPractice(state.wrongQuestions[idx]);
+        });
+    });
+}
