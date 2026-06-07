@@ -7,7 +7,11 @@ Provides O(1) read/write for high-frequency transient state:
   - DAG learning-path JSON trees (with TTL)
 
 Thread-safe: all public methods are guarded by a reentrant lock.
+
+[Complexity] set/get/delete: Time O(1) amortized, Space O(1)
+            lpush_fixed_window: Time O(1) — collections.deque with maxlen
 """
+import collections
 import time
 import threading
 
@@ -48,13 +52,13 @@ class InMemoryCacheProxy:
         return this_key
 
     def lpush_fixed_window(self, key, value, max_size=5):
-        """Sliding-window deque simulation for correctness tracking."""
+        """Sliding-window deque for correctness tracking — O(1) appendleft."""
         with self._lock:
-            lst = self._storage.get(key, [])
-            lst.insert(0, value)
-            if len(lst) > max_size:
-                lst = lst[:max_size]
-            self._storage[key] = lst
+            dq = self._storage.get(key)
+            if dq is None:
+                dq = collections.deque(maxlen=max_size)
+                self._storage[key] = dq
+            dq.appendleft(value)
 
 
 # Global singleton — the single source of truth for cache across the app

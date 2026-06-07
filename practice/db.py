@@ -1,6 +1,8 @@
-"""Database layer — SQLite (default) or MySQL, connection, init, migrations, config."""
+"""Database layer — SQLite (default) or MySQL with connection pool, init, migrations, config."""
 import os
+import queue as _pool_queue
 import sqlite3
+import threading as _threading
 from flask import g
 
 from practice import DEFAULT_CONFIG, practice_bp
@@ -21,8 +23,73 @@ MYSQL_CONFIG = {
     "charset": "utf8mb4",
 }
 
+# MySQL connection pool size (HTTP threads)
+MYSQL_POOL_SIZE = int(os.environ.get("MYSQL_POOL_SIZE", "20"))
+MYSQL_POOL_TIMEOUT = float(os.environ.get("MYSQL_POOL_TIMEOUT", "5.0"))  # seconds
+
 # SQLite path (unchanged)
 DATABASE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "practice.db")
+
+
+# ================================================================
+# MySQL connection pool
+# ================================================================
+_mysql_pool = None
+_mysql_pool_lock = _threading.Lock()
+
+
+def _init_mysql_pool():
+    """Lazy-init the MySQL connection pool (thread-safe, called once)."""
+    global _mysql_pool
+    if _mysql_pool is None:
+        with _mysql_pool_lock:
+            if _mysql_pool is None:
+                _mysql_pool = _pool_queue.Queue(maxsize=MYSQL_POOL_SIZE)
+                for _ in range(MYSQL_POOL_SIZE):
+                    _mysql_pool.put(_create_mysql_conn())
+
+
+def _create_mysql_conn():
+    """Create a fresh MySQL connection & wrap it (for pool or worker)."""
+    import pymysql
+    conn = pymysql.connect(
+        host=MYSQL_CONFIG["host"],
+        port=MYSQL_CONFIG["port"],
+        user=MYSQL_CONFIG["user"],
+        password=MYSQL_CONFIG["password"],
+        database=MYSQL_CONFIG["database"],
+        charset=MYSQL_CONFIG["charset"],
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
+    )
+    return _MySQLConnection(conn)
+
+
+def _checkout_mysql():
+    """Check out a connection from the pool, ensure clean state, ping for freshness."""
+    _init_mysql_pool()
+    try:
+        db = _mysql_pool.get(timeout=MYSQL_POOL_TIMEOUT)
+    except _pool_queue.Empty:
+        raise RuntimeError(
+            f"MySQL connection pool exhausted ({MYSQL_POOL_SIZE} connections in use). "
+            f"Increase MYSQL_POOL_SIZE or reduce concurrency."
+        )
+    try:
+        db._conn.rollback()          # clear any stale transaction snapshot
+    except Exception:
+        pass
+    db._conn.ping(reconnect=True)     # refresh stale connection
+    return db
+
+
+def _return_mysql(db):
+    """Return a connection to the pool (rollback any lingering transaction first)."""
+    try:
+        db._conn.rollback()   # clear implicit REPEATABLE READ snapshot
+    except Exception:
+        pass
+    _mysql_pool.put(db)
 
 
 # ================================================================
@@ -33,11 +100,22 @@ class _MySQLConnection:
 
     def __init__(self, conn):
         self._conn = conn
-        self._conn.ping(reconnect=True)
+        self._conn.ping(reconnect=True)  # validate on creation
 
     def execute(self, sql, params=()):
         # Convert ? placeholders to %s
         sql = sql.replace("?", "%s")
+        # SQLite → MySQL syntax conversions
+        sql = sql.replace("INSERT OR IGNORE INTO", "INSERT IGNORE INTO")
+        sql = sql.replace("INSERT OR REPLACE INTO", "REPLACE INTO")
+        # ORDER BY RANDOM() is SQLite; MySQL uses RAND()
+        import re as _re
+        sql = _re.sub(r'\bRANDOM\s*\(\s*\)', 'RAND()', sql)
+        # Backtick-quote bare `key` column (MySQL reserved word).
+        # Only matches lowercase "key", NOT "PRIMARY KEY"/"FOREIGN KEY",
+        # and skips already-quoted `key`.
+        import re as _re
+        sql = _re.sub(r'(?<!`)\bkey\b(?!`)', '`key`', sql)
         cursor = self._conn.cursor()
         cursor.execute(sql, params)
         return _MySQLCursor(cursor)
@@ -73,10 +151,17 @@ class _MySQLCursor:
 
 
 class _RowDict:
-    """Dict-like row that supports row['key'], row.key, and 'key' in row."""
+    """Dict-like row that supports row['key'], row.key, row[0], and 'key' in row.
+
+    pymysql DictCursor returns plain dicts; this wrapper adds sqlite3.Row
+    compatibility: integer index access and attribute access.
+    """
     def __init__(self, data):
         self._data = data
     def __getitem__(self, key):
+        if isinstance(key, int):
+            # sqlite3.Row-style integer indexing
+            return list(self._data.values())[key]
         return self._data[key]
     def __contains__(self, key):
         return key in self._data
@@ -114,31 +199,22 @@ def _connect_sqlite():
     conn.execute("PRAGMA temp_store=MEMORY;")
     # 256 MB memory-mapped I/O — bypasses read() syscalls entirely
     conn.execute("PRAGMA mmap_size=268435456;")
-    # Defer WAL checkpoint to 10K pages — smoother tail latency under write bursts
-    conn.execute("PRAGMA wal_autocheckpoint=10000;")
+    # Defer WAL checkpoint to 100 pages (~400 KB) — aggressive truncation
+    # prevents the WAL ballooning to 40 MB+ under sustained write bursts
+    conn.execute("PRAGMA wal_autocheckpoint=100;")
     return conn
 
 
 def _connect_mysql():
-    import pymysql
-    conn = pymysql.connect(
-        host=MYSQL_CONFIG["host"],
-        port=MYSQL_CONFIG["port"],
-        user=MYSQL_CONFIG["user"],
-        password=MYSQL_CONFIG["password"],
-        database=MYSQL_CONFIG["database"],
-        charset=MYSQL_CONFIG["charset"],
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=False,
-    )
-    return _MySQLConnection(conn)
+    """Create a fresh MySQL connection (used by schema init only)."""
+    return _create_mysql_conn()
 
 
 def get_db():
-    """Per-request database connection stored on Flask's g."""
+    """Per-request database connection — pooled for MySQL, fresh for SQLite."""
     if "practice_db" not in g:
         if DB_TYPE == "mysql":
-            g.practice_db = _connect_mysql()
+            g.practice_db = _checkout_mysql()   # pool checkout + ping
         else:
             g.practice_db = _connect_sqlite()
     return g.practice_db
@@ -148,7 +224,10 @@ def get_db():
 def close_db(_exception):
     db = g.pop("practice_db", None)
     if db is not None:
-        db.close()
+        if DB_TYPE == "mysql":
+            _return_mysql(db)   # return to pool (no close)
+        else:
+            db.close()
 
 
 # ================================================================
@@ -215,6 +294,11 @@ _SQLITE_DDL = '''
         theta_before REAL, theta_after REAL, response_time_secs INTEGER,
         FOREIGN KEY(session_id) REFERENCES cat_exam_sessions(id)
     );
+
+    -- Hot-path indexes (avoid full-table scans under concurrent load)
+    CREATE INDEX IF NOT EXISTS idx_answer_records_qid ON answer_records(question_id);
+    CREATE INDEX IF NOT EXISTS idx_answer_records_sid ON answer_records(session_id);
+    CREATE INDEX IF NOT EXISTS idx_qnm_node_id ON question_node_mapping(node_id);
 '''
 
 
@@ -321,6 +405,19 @@ def _init_mysql_schema():
     ]
     for sql in tables:
         db.execute(sql)
+
+    # MySQL indexes (CREATE INDEX IF NOT EXISTS not supported — catch duplicates)
+    _mysql_indexes = [
+        "CREATE INDEX idx_answer_records_qid ON answer_records(question_id)",
+        "CREATE INDEX idx_answer_records_sid ON answer_records(session_id)",
+        "CREATE INDEX idx_qnm_node_id ON question_node_mapping(node_id)",
+    ]
+    for idx_sql in _mysql_indexes:
+        try:
+            db.execute(idx_sql)
+        except Exception:
+            pass  # index already exists
+
     for k, v in DEFAULT_CONFIG.items():
         db.execute(
             "INSERT IGNORE INTO config (`key`, value) VALUES (?, ?)", (k, v)

@@ -19,6 +19,8 @@ def calc_fatigue(session_duration_minutes, question_count, alpha=0.015, beta=0.0
 
     Returns:
         Fatigue factor F in [0, 1)
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     raw = alpha * session_duration_minutes + beta * question_count
     return 1.0 - math.exp(-raw)
@@ -38,5 +40,7 @@ def calc_fatigue_adjusted_score(base_score, fatigue, difficulty):
 
     Returns:
         Fatigue-adjusted final score
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     return base_score * (1.0 - fatigue * difficulty)

@@ -26,6 +26,8 @@ def calc_irt_probability(theta, irt_a, irt_b, irt_c):
 
     Returns:
         Probability of correct response, clamped to [0.001, 0.999]
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     try:
         exponent = -D * irt_a * (theta - irt_b)
@@ -60,6 +62,8 @@ def calibrate_irt_parameters(theta, irt_a, irt_b, irt_c, is_correct,
 
     Returns:
         (new_theta, new_a, new_b) tuple, each clamped to valid range
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     u = 1.0 if is_correct else 0.0
     p = calc_irt_probability(theta, irt_a, irt_b, irt_c)
@@ -97,6 +101,8 @@ def calc_irt_difficulty_damping(theta, irt_b, max_damping_span=1.5):
 
     Returns:
         Damping coefficient in (0, 1]
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     deviation = irt_b - theta
     sweet_spot_deviation = deviation - 0.3

@@ -69,10 +69,11 @@ def _sqlite_db_factory():
 
 
 def _worker_db_factory():
-    """Return a fresh DB connection for background workers (SQLite or MySQL)."""
-    from practice.db import DB_TYPE, _connect_mysql, _connect_sqlite
+    """Return a fresh DB connection for background workers (SQLite or MySQL).
+    MySQL workers get a dedicated connection outside the HTTP pool."""
+    from practice.db import DB_TYPE, _create_mysql_conn, _connect_sqlite
     if DB_TYPE == "mysql":
-        return _connect_mysql()
+        return _create_mysql_conn()
     return _connect_sqlite()
 
 # Thread-based worker (legacy fallback)
@@ -139,7 +140,11 @@ def create_app():
 
     # Point template_folder at the project-root templates/ directory
     _project_root = os.path.dirname(os.path.dirname(__file__))
-    app = Flask(__name__, template_folder=os.path.join(_project_root, "templates"))
+    app = Flask(
+        __name__,
+        template_folder=os.path.join(_project_root, "templates"),
+        static_folder=os.path.join(_project_root, "static"),
+    )
 
     app.register_blueprint(practice_bp, url_prefix="/practice")
 

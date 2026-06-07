@@ -26,6 +26,8 @@ def verify_graph_cycle_tarjan(num_nodes, graph_adjacency_map):
 
     Returns:
         bool: True if a cycle (SCC size > 1) is detected, False otherwise
+
+    [Complexity] Time: O(V + E)  Space: O(V) — standard Tarjan DFS
     """
     dfn = {}
     low = {}
@@ -74,9 +76,18 @@ def execute_transitive_reduction(nodes_list, edges_tuple_list):
     Compute a transitive reduction on a DAG: remove edges for which an
     alternative indirect path already exists.
 
-    For every direct edge (source, target), if there exists a path from
-    source to target that does NOT use this direct edge, the direct edge
-    is redundant and should be removed.
+    For every direct edge (s, d), if there exists a neighbour w of s (w != d)
+    such that d is reachable from w, then the edge (s,d) is redundant because
+    s → w → ... → d is an indirect path.
+
+    Algorithm (optimised):
+      Phase 1 — Precompute reachability for every node via iterative DFS.
+                O(V * (V+E)) total.
+      Phase 2 — For each edge (s,d), scan adjacency[s] checking whether d is
+                in reachable[w] for some w ≠ d.  O(E * avg_out_degree).
+
+    Since knowledge graphs are DAGs and typically sparse (avg_out_degree ≪ V),
+    Phase 2 is effectively O(E) and the total is dominated by Phase 1.
 
     Args:
         nodes_list: list of all node IDs in the graph
@@ -84,30 +95,41 @@ def execute_transitive_reduction(nodes_list, edges_tuple_list):
 
     Returns:
         list of (source_id, target_id) that are NOT redundant (the reduced set)
+
+    [Complexity] Time: O(V * (V+E)) — reachability precomputation dominates
+                Space: O(V²) — |V| reachability sets of size up to |V|
     """
-    # Build adjacency set for fast lookup
+    if not edges_tuple_list:
+        return []
+
+    # Build adjacency
     adjacency = {u: set() for u in nodes_list}
     for s, d in edges_tuple_list:
         adjacency[s].add(d)
 
-    def dfs_has_indirect(start, target, current, visited):
-        """Check if there is an indirect path from start to target
-        without using the direct edge (start, target)."""
-        if current == target and start != current:
-            return True
-        visited.add(current)
-        for next_node in adjacency.get(current, []):
-            # Skip the direct edge we are testing
-            if current == start and next_node == target:
+    # ---- Phase 1: precompute reachability for every node ----
+    # reachable[u] = all nodes v != u such that u can reach v
+    reachable = {}
+    for u in nodes_list:
+        visited = set()
+        stack = [u]
+        while stack:
+            v = stack.pop()
+            if v in visited:
                 continue
-            if next_node not in visited:
-                if dfs_has_indirect(start, target, next_node, visited):
-                    return True
-        return False
+            visited.add(v)
+            for w in adjacency.get(v, []):
+                if w not in visited:
+                    stack.append(w)
+        visited.discard(u)          # exclude self
+        reachable[u] = visited
 
+    # ---- Phase 2: check each edge for an indirect alternative ----
     redundants = set()
     for s, d in edges_tuple_list:
-        if dfs_has_indirect(s, d, s, set()):
-            redundants.add((s, d))
+        for w in adjacency[s]:
+            if w != d and d in reachable.get(w, set()):
+                redundants.add((s, d))
+                break
 
     return [edge for edge in edges_tuple_list if edge not in redundants]

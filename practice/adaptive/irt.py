@@ -33,6 +33,8 @@ def calc_difficulty_damping(diff_q, theta_n, sigma=0.20):
 
     Returns:
         Damping coefficient Omega_diff in (0, 1]
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     deviation = diff_q - theta_n
     return math.exp(-(deviation ** 2) / (2 * sigma ** 2))
@@ -51,6 +53,8 @@ def calc_mastery(avg_retention, rolling_acc, avg_lambda):
 
     Returns:
         Mastery M_n in [0, 1]
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     avg_lambda_norm = min(1.0, avg_lambda / 5.0)
     M_n = 0.4 * avg_retention + 0.35 * rolling_acc + 0.25 * (1.0 - avg_lambda_norm)

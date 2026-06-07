@@ -26,7 +26,13 @@ class GraphTaskType:
 
 
 def background_worker_loop(db_factory_func):
-    """Daemon event-loop with debounce — drains queue in time windows, deduplicates."""
+    """
+    Daemon event-loop with debounce — drains queue in time windows, deduplicates.
+
+    [Complexity] Per debounce window: Time O(D * U) — D = drain passes, U = unique
+                node_ids. Each node triggers update_node_mastery which is O(Q).
+                Space O(U) — dedup set.
+    """
     db = db_factory_func()
     logger.info(
         "Background adaptive-computation worker thread started (debounce=%ss).",
@@ -44,12 +50,10 @@ def background_worker_loop(db_factory_func):
             if first_task.get("type") == GraphTaskType.UPDATE_NODE_MASTERY:
                 p = first_task["payload"]
                 if "write_payload" in p:
-                    # Full answer write — execute immediately (no debounce for writes)
+                    # Full answer write — _execute_answer_writes already calls
+                    # batch_update_node_masteries internally; no need to debounce.
                     from practice.routes.recommend import _execute_answer_writes
                     _execute_answer_writes(db, p["write_payload"])
-                    # Also collect node_ids for mastery debounce
-                    for nid in p["write_payload"].get("node_ids", []):
-                        debounce_set.add(nid)
                 else:
                     debounce_set.add(p.get("node_id"))
 
@@ -62,8 +66,6 @@ def background_worker_loop(db_factory_func):
                         if "write_payload" in np:
                             from practice.routes.recommend import _execute_answer_writes
                             _execute_answer_writes(db, np["write_payload"])
-                            for nid in np["write_payload"].get("node_ids", []):
-                                debounce_set.add(nid)
                         else:
                             debounce_set.add(np.get("node_id"))
                 except queue.Empty:
@@ -75,15 +77,14 @@ def background_worker_loop(db_factory_func):
                     "Debounce window closed — %d unique node(s) to recompute.",
                     len(debounce_set),
                 )
-                from practice.engine import update_node_mastery
+                from practice.engine import batch_update_node_masteries
 
-                for node_id in debounce_set:
-                    try:
-                        update_node_mastery(db, node_id)
-                    except Exception:
-                        logger.exception(
-                            "Mastery recompute failed for node #%s", node_id
-                        )
+                try:
+                    batch_update_node_masteries(db, debounce_set)
+                except Exception:
+                    logger.exception(
+                        "Batch mastery recompute failed for %d nodes", len(debounce_set)
+                    )
                 try:
                     db.commit()
                 except Exception:

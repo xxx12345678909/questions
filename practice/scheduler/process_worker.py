@@ -38,6 +38,11 @@ def run_debounced_worker_loop(task_q, sqlite_db_factory_func, interval_seconds=2
     2. Open a debounce window (interval_seconds), drain the queue
        non-blockingly, and merge duplicate node_ids into a dedup set.
     3. Execute update_node_mastery once per unique node_id, then loop.
+
+    [Complexity] Per debounce window: Time O(D * U) — D = drain passes, U = unique
+                node_ids. Each node triggers update_node_mastery which is O(Q).
+                Space O(U) — dedup set.
+                GIL-free: runs on an independent CPU core via multiprocessing.
     """
     # Mark this process as a worker child so practice/__init__.py won't re-spawn
     os.environ[_ENV_WORKER_FLAG] = "1"
@@ -75,15 +80,14 @@ def run_debounced_worker_loop(task_q, sqlite_db_factory_func, interval_seconds=2
                     len(debounce_set),
                 )
                 # Import inside the loop so the child process loads its own copy
-                from practice.engine import update_node_mastery
+                from practice.engine import batch_update_node_masteries
 
-                for node_id in debounce_set:
-                    try:
-                        update_node_mastery(db, node_id)
-                    except Exception:
-                        logger.exception(
-                            "Mastery recompute failed for node #%s", node_id
-                        )
+                try:
+                    batch_update_node_masteries(db, debounce_set)
+                except Exception:
+                    logger.exception(
+                        "Batch mastery recompute failed for %d nodes", len(debounce_set)
+                    )
                 try:
                     db.commit()
                 except Exception:

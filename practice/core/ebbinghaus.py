@@ -13,7 +13,11 @@ from practice import SUBJECT_WEIGHTS
 # ================================================================
 
 def calc_retention(lambda_, last_review, now=None):
-    """R(t) = exp(-lambda * hours_since_review). Returns 0.0 if never reviewed."""
+    """
+    R(t) = exp(-lambda * hours_since_review). Returns 0.0 if never reviewed.
+
+    [Complexity] Time: O(1)  Space: O(1)
+    """
     if last_review is None:
         return 0.0
     if now is None:
@@ -33,6 +37,8 @@ def calc_retention_pure(lambda_val, seconds_since_review):
     【纯函数】R(t) = exp(-lambda * hours_since_review)
     输入 Lambda 隐变量与距离上一次复习的精确秒数，求解记忆保留率。
     与 calc_retention 不同，此函数不依赖 datetime 对象，完全基于秒数计算。
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     if seconds_since_review is None or seconds_since_review < 0:
         return 0.0
@@ -41,7 +47,11 @@ def calc_retention_pure(lambda_val, seconds_since_review):
 
 
 def calc_priority(lambda_, last_review, subject, times_wrong, now=None):
-    """priority = (1 - retention) * weight, with subject + wrong bonus."""
+    """
+    priority = (1 - retention) * weight, with subject + wrong bonus.
+
+    [Complexity] Time: O(1)  Space: O(1)
+    """
     r = calc_retention(lambda_, last_review, now)
     weight = SUBJECT_WEIGHTS.get(subject, 1.0)
     if times_wrong > 0:
@@ -50,7 +60,11 @@ def calc_priority(lambda_, last_review, subject, times_wrong, now=None):
 
 
 def calc_score(lambda_, last_review, subject, times_wrong, avg_cost, now=None):
-    """score = priority / avg_cost (ratio-based scheduling)."""
+    """
+    score = priority / avg_cost (ratio-based scheduling).
+
+    [Complexity] Time: O(1)  Space: O(1)
+    """
     priority, r = calc_priority(lambda_, last_review, subject, times_wrong, now)
     score = priority / max(avg_cost, 1.0)
     return score, priority, r
@@ -64,6 +78,8 @@ def calc_time_cost_adjustment(time_spent, avg_cost):
     """
     Calculate time-cost deviation coefficient.
     gamma = time_spent / avg_cost
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     if avg_cost <= 0:
         avg_cost = 5.0
@@ -81,6 +97,8 @@ def update_lambda_with_time_cost(old_lambda, success, time_spent, avg_cost):
     Default: success? lambda*0.8 : lambda*1.2
 
     Clamped to [0.01, 5.0].
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     gamma = calc_time_cost_adjustment(time_spent, avg_cost)
 
@@ -103,18 +121,28 @@ def update_lambda(old_lambda, success):
     """
     Simple lambda update. Success: lambda*0.8. Failure: lambda*1.2.
     (deprecated — use update_lambda_with_time_cost instead)
+
+    [Complexity] Time: O(1)  Space: O(1)
     """
     new_lambda = old_lambda * 0.8 if success else old_lambda * 1.2
     return max(0.01, min(5.0, new_lambda))
 
 
 def update_cost(old_cost, new_cost):
-    """EMA: 0.7 * old + 0.3 * new, rounded to 1 decimal."""
+    """
+    EMA: 0.7 * old + 0.3 * new, rounded to 1 decimal.
+
+    [Complexity] Time: O(1)  Space: O(1)
+    """
     return round(0.7 * old_cost + 0.3 * new_cost, 1)
 
 
 def update_accuracy(times_correct, times_wrong, success):
-    """Rolling accuracy = times_correct / total."""
+    """
+    Rolling accuracy = times_correct / total.
+
+    [Complexity] Time: O(1)  Space: O(1)
+    """
     if success:
         times_correct += 1
     else:

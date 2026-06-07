@@ -2,6 +2,7 @@
 Pure stateless DAG topological path planning.
 No Flask or database dependencies — operates on pre-fetched data structures.
 """
+import heapq
 
 
 def build_topo_learning_path(target_node_id, target_name, adjacency_tree,
@@ -25,6 +26,12 @@ def build_topo_learning_path(target_node_id, target_name, adjacency_tree,
 
     Returns:
         dict: {target_node, estimated_hours, path: [{step, node_id, name, mastery, status}]}
+
+    [Complexity] Time: O((V + E) log V) — heap-based Kahn with priority queue
+                Space: O(V)
+
+        Uses heapq to maintain zero-indegree frontier sorted by mastery.
+        Each push/pop is O(log V), total is bounded by O((V+E) log V).
     """
     # Collect all nodes involved
     all_nodes = {target_node_id}
@@ -38,14 +45,16 @@ def build_topo_learning_path(target_node_id, target_name, adjacency_tree,
         for prereq_id in prereqs:
             in_degree[prereq_id] = in_degree.get(prereq_id, 0) + 1
 
-    # Topological sort: prioritize lowest-mastery nodes first
+    # Topological sort: heap-based priority queue, lowest-mastery nodes first
     sorted_path = []
     remaining = set(all_nodes)
-    zero_in = [nid for nid in remaining if in_degree.get(nid, 0) == 0]
+    # Seed heap with all nodes that have in-degree 0
+    heap = [(node_masteries.get(nid, 1.0), nid)
+            for nid in remaining if in_degree.get(nid, 0) == 0]
+    heapq.heapify(heap)  # O(V) bulk heapify
 
-    while zero_in:
-        zero_in.sort(key=lambda nid: (node_masteries.get(nid, 1.0), nid))
-        current = zero_in.pop(0)
+    while heap:
+        _, current = heapq.heappop(heap)  # O(log V)
 
         if current != target_node_id:
             sorted_path.append(current)
@@ -55,7 +64,10 @@ def build_topo_learning_path(target_node_id, target_name, adjacency_tree,
             for prereq_id in adjacency_tree[current]:
                 in_degree[prereq_id] -= 1
                 if in_degree[prereq_id] == 0 and prereq_id in remaining:
-                    zero_in.append(prereq_id)
+                    heapq.heappush(
+                        heap,
+                        (node_masteries.get(prereq_id, 1.0), prereq_id)
+                    )
 
     # Add any remaining nodes (sorted by mastery), target node last
     remaining_list = sorted(remaining, key=lambda nid: node_masteries.get(nid, 1.0))

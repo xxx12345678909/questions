@@ -4,6 +4,7 @@ CAT (Computer Adaptive Testing) engine — IRT 3PL-based adaptive exam.
 Batch-oriented design: fetch all questions upfront, submit all answers
 at once.  Pure algorithmic core: receives db connection as first parameter.
 """
+import heapq
 import json
 from datetime import datetime, UTC
 
@@ -16,6 +17,12 @@ def get_all_cat_questions(db, session_id):
     Instead of streaming one question per request, this returns the full
     set at once so the client can cache everything and let the student
     navigate freely without further server round-trips.
+
+    [Complexity] Time: O(N log K) — heapq.nlargest with K = max_tasks
+                Space: O(K) — only top-K results kept in memory
+
+        Previously O(N log N) via full sort; now O(N log K) where K ≪ N
+        (max_tasks is typically 10-30, N can be hundreds).
     """
     session = db.execute(
         "SELECT current_theta, max_tasks FROM cat_exam_sessions WHERE id = ?",
@@ -36,18 +43,15 @@ def get_all_cat_questions(db, session_id):
         return [], max_tasks
 
     # Score every question by IRT information: damping * discrimination
-    scored = []
-    for q in all_questions:
+    # Use heapq.nlargest: O(N log K) instead of full sort O(N log N)
+    def _irt_score(q):
         damping = calc_irt_difficulty_damping(theta, q['irt_b'])
-        score = damping * q['irt_a']
-        scored.append((score, q))
+        return damping * q['irt_a']
 
-    # Sort by score descending, take top max_tasks
-    scored.sort(key=lambda x: x[0], reverse=True)
-    selected = scored[:max_tasks]
+    selected = heapq.nlargest(max_tasks, all_questions, key=_irt_score)
 
     questions = []
-    for _, q in selected:
+    for q in selected:
         questions.append({
             'id': q['id'],
             'content': q['content'],
@@ -73,6 +77,8 @@ def submit_cat_batch(db, session_id, answers):
 
     Returns:
         dict with {session_id, task_count, final_responses, msg}
+
+    [Complexity] Time: O(K) where K = len(answers)  Space: O(K)
     """
     session = db.execute(
         "SELECT * FROM cat_exam_sessions WHERE id = ?",
@@ -147,6 +153,9 @@ def recalc_cat_session_theta(db, session_id, just_annotated_record_id=None):
     plus the record being annotated right now.
 
     Also updates the associated knowledge_nodes' irt_theta via a rolling average.
+
+    [Complexity] Time: O(D) where D = number of CAT detail records for this session
+                Space: O(1)
     """
     from practice.core.irt import calibrate_irt_parameters
 

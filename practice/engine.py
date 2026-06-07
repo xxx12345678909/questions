@@ -25,6 +25,12 @@ from practice.core.irt import calc_irt_probability, calibrate_irt_parameters, ca
 
 
 # ================================================================
+# Re-export repository functions used by worker threads
+from practice.repository.knowledge_repo import (  # noqa: E402, F401
+    update_node_mastery, batch_update_node_masteries,
+)
+
+# ================================================================
 # Backward-compatible DB wrappers (delegate to repository + pure)
 # ================================================================
 

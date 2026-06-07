@@ -19,6 +19,8 @@ def calc_prerequisite_damping(prereq_retentions, retention_threshold=0.6):
 
     Returns:
         Damping coefficient omega_q in (0.0, 1.0]. Returns 1.0 if no prerequisites.
+
+    [Complexity] Time: O(k) where k = len(prereq_retentions)  Space: O(1)
     """
     if not prereq_retentions:
         return 1.0

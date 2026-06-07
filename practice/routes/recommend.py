@@ -174,7 +174,10 @@ def submit_answer():
     }
 
     if force_sync:
-        _execute_answer_writes(db, write_payload)
+        try:
+            _execute_answer_writes(db, write_payload)
+        except Exception:
+            return jsonify({'error': '提交失败，请重试'}), 500
     else:
         from practice.scheduler.worker import task_queue, GraphTaskType
         try:
@@ -183,7 +186,10 @@ def submit_answer():
                 "payload": {"write_payload": write_payload},
             }, block=False)
         except Exception:
-            _execute_answer_writes(db, write_payload)
+            try:
+                _execute_answer_writes(db, write_payload)
+            except Exception:
+                return jsonify({'error': '提交失败，请重试'}), 500
 
     # IRT calibration (read-only compute, fast)
     irt_result = None
@@ -194,11 +200,13 @@ def submit_answer():
                 (question_id,)
             ).fetchone()
             if question_irt:
-                thetas = []
-                for nid in node_ids:
-                    nd = db.execute('SELECT COALESCE(irt_theta,0.0) as t FROM knowledge_nodes WHERE id=?', (nid,)).fetchone()
-                    if nd:
-                        thetas.append(nd['t'])
+                # Batch fetch IRT thetas: 1 query instead of len(node_ids) queries
+                ph = ','.join('?' * len(node_ids))
+                theta_rows = db.execute(
+                    f'SELECT COALESCE(irt_theta,0.0) as t FROM knowledge_nodes WHERE id IN ({ph})',
+                    tuple(node_ids)
+                ).fetchall()
+                thetas = [r['t'] for r in theta_rows]
                 if thetas:
                     avg_t = sum(thetas) / len(thetas)
                     new_theta, new_a, new_b = calibrate_irt_parameters(
@@ -226,43 +234,76 @@ def submit_answer():
 
 
 def _execute_answer_writes(db, p):
-    """Execute all DB writes for an answer submission (called by worker thread or sync path)."""
+    """
+    Execute all DB writes for an answer submission (called by worker thread or sync path).
+
+    Uses INSERT ... ON DUPLICATE KEY UPDATE (MySQL) to eliminate the race condition
+    where two concurrent requests both see has_state=False and both try to INSERT
+    the same question_id.  Retries up to 3 times on deadlock (MySQL error 1213).
+
+    [Complexity] Time: O(N + Q + R) — batch_update_node_masteries replaces
+                        per-node SQL with 3 batch queries + 1 batch UPDATE.
+                Space: O(N)
+    """
     import json as _json
+    import time as _time
+    from practice.db import DB_TYPE
 
     qid = p["question_id"]
     is_c = p["is_correct"]
     strokes = _json.dumps(p.get("strokes", [])) if isinstance(p.get("strokes"), (list, dict)) else (p.get("strokes") or "[]")
     nids = p.get("node_ids", [])
 
-    if p.get("has_state"):
-        db.execute(
-            'UPDATE user_question_state SET lambda_=?, last_review=?, accuracy=?, times_correct=?, times_wrong=? WHERE question_id=?',
-            (p["lambda_new"], p["now_iso"], p["acc_new"], p["tc_new"], p["tw_new"], qid))
-    else:
-        db.execute(
-            'INSERT INTO user_question_state (question_id,lambda_,last_review,accuracy,times_correct,times_wrong) VALUES (?,?,?,?,?,?)',
-            (qid, p["lambda_new"], p["now_iso"], p["acc_new"], p["tc_new"], p["tw_new"]))
-
-    if p.get("time_spent", 0) > 0:
-        db.execute('UPDATE questions SET avg_cost=? WHERE id=?', (p["cost_new"], qid))
-
-    db.execute(
-        'INSERT INTO answer_records (question_id,time_spent,is_correct,strokes,session_id,user_theta_snapshot,irt_theta_snapshot) VALUES (?,?,?,?,?,?,?)',
-        (qid, p["time_spent"], 1 if is_c else 0, strokes, None, None, None))
-
-    db.commit()
-
-    # Mastery recompute for associated nodes
-    for nid in nids:
-        from practice.repository.knowledge_repo import update_node_mastery
+    for attempt in range(3):
         try:
-            update_node_mastery(db, nid)
-        except Exception:
-            pass
-    try:
-        db.commit()
-    except Exception:
-        pass
+            if DB_TYPE == "mysql":
+                # MySQL: ON DUPLICATE KEY UPDATE — atomic upsert, no race condition
+                db.execute(
+                    'INSERT INTO user_question_state (question_id,lambda_,last_review,accuracy,times_correct,times_wrong) '
+                    'VALUES (?,?,?,?,?,?) '
+                    'ON DUPLICATE KEY UPDATE lambda_=VALUES(lambda_), last_review=VALUES(last_review), '
+                    'accuracy=VALUES(accuracy), times_correct=VALUES(times_correct), times_wrong=VALUES(times_wrong)',
+                    (qid, p["lambda_new"], p["now_iso"], p["acc_new"], p["tc_new"], p["tw_new"]))
+            else:
+                if p.get("has_state"):
+                    db.execute(
+                        'UPDATE user_question_state SET lambda_=?, last_review=?, accuracy=?, times_correct=?, times_wrong=? WHERE question_id=?',
+                        (p["lambda_new"], p["now_iso"], p["acc_new"], p["tc_new"], p["tw_new"], qid))
+                else:
+                    db.execute(
+                        'INSERT INTO user_question_state (question_id,lambda_,last_review,accuracy,times_correct,times_wrong) VALUES (?,?,?,?,?,?)',
+                        (qid, p["lambda_new"], p["now_iso"], p["acc_new"], p["tc_new"], p["tw_new"]))
+
+            if p.get("time_spent", 0) > 0:
+                db.execute('UPDATE questions SET avg_cost=? WHERE id=?', (p["cost_new"], qid))
+
+            db.execute(
+                'INSERT INTO answer_records (question_id,time_spent,is_correct,strokes,session_id,user_theta_snapshot,irt_theta_snapshot) VALUES (?,?,?,?,?,?,?)',
+                (qid, p["time_spent"], 1 if is_c else 0, strokes, None, None, None))
+
+            db.commit()
+
+            # Mastery recompute for associated nodes (batch)
+            if nids:
+                from practice.repository.knowledge_repo import batch_update_node_masteries
+                try:
+                    batch_update_node_masteries(db, nids)
+                except Exception:
+                    pass
+                try:
+                    db.commit()
+                except Exception:
+                    pass
+            return  # success
+
+        except Exception as e:
+            err_str = str(e)
+            # MySQL deadlock (1213) or lock wait timeout (1205) — retry
+            is_retryable = '1213' in err_str or '1205' in err_str or 'Deadlock' in err_str
+            if is_retryable and attempt < 2:
+                _time.sleep(0.05 * (attempt + 1))  # 50ms, 100ms backoff
+                continue
+            raise
 
 
 # ----------------------------------------------------------------

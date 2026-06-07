@@ -13,8 +13,11 @@ from practice.graph.damping import calc_prerequisite_damping
 from practice.adaptive.fatigue import calc_fatigue_adjusted_score
 from practice.adaptive.irt import calc_difficulty_damping
 from practice.core.irt import calc_irt_difficulty_damping
-from practice.repository.knowledge_repo import get_prerequisite_retentions, get_node_sliding_accuracy, fetch_all_nodes_irt_theta
-from practice.repository.question_repo import fetch_all_questions_with_state, fetch_question_node_ids
+from practice.repository.knowledge_repo import (
+    batch_get_prerequisite_retentions, get_node_sliding_accuracy,
+    fetch_all_nodes_irt_theta,
+)
+from practice.repository.question_repo import fetch_all_questions_with_state
 
 
 def build_recommendation(db, budget, review_ratio, wrong_ratio, new_ratio,
@@ -47,6 +50,15 @@ def build_recommendation(db, budget, review_ratio, wrong_ratio, new_ratio,
 
     Returns:
         dict: {questions, total, breakdown: {review, wrong, new}}
+
+    [Complexity] Time: O(N log N + M + D + S) — N = questions (sort dominates),
+                        M/D/S = batch preload row counts (3 upfront queries + in-memory
+                        computation replace N x nested SQL calls).
+                Space: O(N) — three pools hold all scored items
+
+    TODO[perf]: The interleaving linear scan was O(B * pool_size). Now pre-partitions
+                each pool by type into sub-buckets — O(B * T) where T = distinct
+                types per pool (typically 2-5, far smaller than pool_size).
     """
     now = datetime.now(UTC).replace(tzinfo=None)
 
@@ -63,6 +75,23 @@ def build_recommendation(db, budget, review_ratio, wrong_ratio, new_ratio,
         node_irt_theta = fetch_all_nodes_irt_theta(db)
 
     rows = fetch_all_questions_with_state(db)
+
+    # ---- Batch preload: question→node mapping (2 per-question SQLs → 1 upfront) ----
+    all_qids = [r['id'] for r in rows]
+    q_to_nodes = {}  # question_id → list of node_ids
+    if all_qids:
+        placeholders = ','.join('?' * len(all_qids))
+        qnm_rows = db.execute(
+            f'SELECT question_id, node_id FROM question_node_mapping WHERE question_id IN ({placeholders})',
+            tuple(all_qids)
+        ).fetchall()
+        for qr in qnm_rows:
+            q_to_nodes.setdefault(qr['question_id'], []).append(qr['node_id'])
+
+    # ---- Batch preload: prerequisite retentions (N x nested SQL → 3 upfront) ----
+    prereq_retention_cache = {}
+    if enable_knowledge_graph:
+        prereq_retention_cache = batch_get_prerequisite_retentions(db, all_qids, now)
 
     review_pool, wrong_pool, new_pool = [], [], []
 
@@ -83,16 +112,16 @@ def build_recommendation(db, budget, review_ratio, wrong_ratio, new_ratio,
         # 2D: cascade prerequisite knowledge graph damping
         damping = 1.0
         if enable_knowledge_graph:
-            prereq_retentions = get_prerequisite_retentions(db, qid, now)
+            prereq_retentions = prereq_retention_cache.get(qid, [])
             damping = calc_prerequisite_damping(prereq_retentions, retention_threshold=threshold)
             score = score * damping
 
         # 3D: cascade difficulty-ability matching damping
         difficulty_damping = 1.0
+        node_ids = q_to_nodes.get(qid, [])
         if enable_irt:
             # v5: IRT 3PL-based ZPD damping (replaces heuristic Gaussian)
             irt_b = row['irt_b'] if row['irt_b'] is not None else 0.0
-            node_ids = fetch_question_node_ids(db, qid)
             if node_ids:
                 thetas = [node_irt_theta.get(nid, 0.0) for nid in node_ids]
                 avg_theta = sum(thetas) / len(thetas)
@@ -101,7 +130,6 @@ def build_recommendation(db, budget, review_ratio, wrong_ratio, new_ratio,
                 difficulty_damping = calc_irt_difficulty_damping(0.0, irt_b)
             score = score * difficulty_damping
         elif enable_difficulty_adaptation and node_theta_cache:
-            node_ids = fetch_question_node_ids(db, qid)
             if node_ids:
                 thetas = [node_theta_cache.get(nid, 0.5) for nid in node_ids]
                 avg_theta = sum(thetas) / len(thetas)
@@ -169,53 +197,71 @@ def build_recommendation(db, budget, review_ratio, wrong_ratio, new_ratio,
         ('new', new_pool, new_slots),
     ]
 
+    # Pre-partition each pool by type into sub-buckets (O(N) once, then O(1) lookup)
+    pool_type_buckets = {}
+    for pool_name, pool_list, _max_count in pools:
+        buckets = {}
+        for item in pool_list:
+            ctype = item['type'] or ''
+            buckets.setdefault(ctype, []).append(item)
+        pool_type_buckets[pool_name] = buckets
+
     # Interleaving with consecutive-type constraint
     result = []
     recent_types = []
-    pool_indices = {'review': 0, 'wrong': 0, 'new': 0}
     pool_counts = {'review': 0, 'wrong': 0, 'new': 0}
+    pool_limits = {'review': review_slots, 'wrong': wrong_slots, 'new': new_slots}
+    # Per-pool per-type cursor into the bucket
+    bucket_cursors = {
+        pn: {ct: 0 for ct in pool_type_buckets[pn]}
+        for pn in ['review', 'wrong', 'new']
+    }
     pool_order = ['review', 'wrong', 'new']
 
     while len(result) < budget:
         added = False
         for pool_name in pool_order:
-            pool_data = next(p for p in pools if p[0] == pool_name)
-            pool_list = pool_data[1]
-            max_count = pool_data[2]
-            idx = pool_indices[pool_name]
-
-            if pool_counts[pool_name] >= max_count:
+            if pool_counts[pool_name] >= pool_limits[pool_name]:
                 continue
 
-            found = None
-            search_idx = idx
-            while search_idx < len(pool_list):
-                candidate = pool_list[search_idx]
-                ctype = candidate['type']
-                if ctype not in recent_types[-max_consecutive:] or not recent_types:
-                    found = candidate
-                    pool_indices[pool_name] = search_idx + 1
-                    break
-                search_idx += 1
+            buckets = pool_type_buckets[pool_name]
+            # Find the highest-scored candidate whose type is allowed
+            best_candidate = None
+            best_ctype = None
+            for ctype, bucket in buckets.items():
+                if ctype in recent_types[-max_consecutive:] and recent_types:
+                    continue
+                cursor = bucket_cursors[pool_name].get(ctype, 0)
+                if cursor < len(bucket):
+                    candidate = bucket[cursor]
+                    if best_candidate is None or candidate['score'] > best_candidate['score']:
+                        best_candidate = candidate
+                        best_ctype = ctype
 
-            if found is not None:
-                result.append(found)
+            if best_candidate is not None:
+                result.append(best_candidate)
+                bucket_cursors[pool_name][best_ctype] += 1
                 pool_counts[pool_name] += 1
-                recent_types.append(found['type'])
+                recent_types.append(best_ctype)
                 if len(recent_types) > max_consecutive:
                     recent_types.pop(0)
                 added = True
 
         if not added:
+            # Fallback: pick the next available item from any pool (ignore type constraint)
             for pool_name in pool_order:
-                pool_list = next(p for p in pools if p[0] == pool_name)[1]
-                max_count = next(p for p in pools if p[0] == pool_name)[2]
-                idx = pool_indices[pool_name]
-                if pool_counts[pool_name] < max_count and idx < len(pool_list):
-                    result.append(pool_list[idx])
-                    pool_indices[pool_name] = idx + 1
-                    pool_counts[pool_name] += 1
-                    added = True
+                if pool_counts[pool_name] >= pool_limits[pool_name]:
+                    continue
+                buckets = pool_type_buckets[pool_name]
+                for ctype, bucket in buckets.items():
+                    cursor = bucket_cursors[pool_name].get(ctype, 0)
+                    if cursor < len(bucket):
+                        result.append(bucket[cursor])
+                        bucket_cursors[pool_name][ctype] = cursor + 1
+                        pool_counts[pool_name] += 1
+                        added = True
+                        break
+                if added:
                     break
 
         if not added:

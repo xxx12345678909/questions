@@ -10,6 +10,9 @@ from practice import DEFAULT_CONFIG
 # ================================================================
 
 def get_config(db, key):
+    """
+    [Complexity] Time: O(1) — single indexed row lookup  Space: O(1)
+    """
     row = db.execute('SELECT value FROM config WHERE key = ?', (key,)).fetchone()
     if row:
         return row['value']
@@ -33,6 +36,8 @@ def fetch_all_questions_with_state(db):
     Fetch all questions joined with user_question_state.
     Includes IRT 3PL columns (irt_a, irt_b, irt_c).
     Returns list of sqlite3.Row objects.
+
+    [Complexity] Time: O(N) — single LEFT JOIN full scan  Space: O(N) — result rows
     """
     return db.execute('''
         SELECT q.id, q.content, q.answer, q.subject, q.type, q.difficulty,
@@ -48,7 +53,11 @@ def fetch_all_questions_with_state(db):
 
 
 def fetch_question_node_ids(db, question_id):
-    """Fetch knowledge node IDs associated with a question."""
+    """
+    Fetch knowledge node IDs associated with a question.
+
+    [Complexity] Time: O(k) where k = number of node mappings  Space: O(k)
+    """
     rows = db.execute(
         'SELECT node_id FROM question_node_mapping WHERE question_id = ?',
         (question_id,)
